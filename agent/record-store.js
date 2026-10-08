@@ -9,7 +9,7 @@ const {
   buildDeleteReflectionPrompt,
   buildRejectReflectionPrompt,
 } = require("./prompts");
-const { resolveWorkScore } = require("./cluster");
+const { resolveWorkScore, identityKeysFor } = require("./cluster");
 const { KEY_KINDS, CONFIDENCE } = require("./identity");
 
 function uuid() {
@@ -739,6 +739,96 @@ class RecordStore {
     });
 
     return { works, total, page, pageSize };
+  }
+
+  /** 还没归入作品的访问数。回填前后各读一次，对比可见。 */
+  countUnassignedRecords() {
+    return this._dbGetScalar(
+      "SELECT COUNT(*) as count FROM records WHERE workId IS NULL",
+    );
+  }
+
+  /**
+   * 历史回填：把已有访问归入作品（issue #6）。
+   *
+   * 与实时上报共用同一条身份解析（identityKeysFor）与归属（recordWorkVisit）
+   * 代码路径，不存在第二套判定（docs/adr/0002）。
+   *
+   * 幂等靠两个已存在的不变量，而不是靠额外记账：
+   *   - 只处理 workId IS NULL 的记录，已归属的永不被重算；
+   *   - 用记录自己的 timestamp 作为判定时刻，所以重跑同一天的工作
+   *     不会重复计分（recordWorkVisit → resolveWorkScore 当日不重复加）。
+   * 中途失败或退出只留下「后面的还没处理」，再跑一次补齐，不产生重复或损坏。
+   *
+   * @param {{ onProgress?: Function, batchSize?: number }} [options]
+   *        onProgress({ processed, before, assigned, created, remaining }) 每批一次，
+   *        before 为回填前的未归属数（与最终返回值同名，界面上一份数一个名字）
+   * @returns {{ before:number, assigned:number, created:number, ambiguous:number, remaining:number }}
+   */
+  backfillWorks({ onProgress, batchSize = 200 } = {}) {
+    const watchlist = this.getWatchlist();
+    const total = this.countUnassignedRecords();
+    let assigned = 0;
+    let created = 0;
+    let ambiguous = 0;
+    let processed = 0;
+
+    // 键集分页：按 (timestamp, id) 游标前进。归不掉的记录留在原地，
+    // 但游标照样跨过它们，所以不会死循环。
+    let cursorTs = -1;
+    let cursorId = "";
+    for (;;) {
+      const rows = this._dbAll(
+        `SELECT id, url, title, domain, matchedRule, tabId, timestamp, description, ogImage
+         FROM records
+         WHERE workId IS NULL AND (timestamp > ? OR (timestamp = ? AND id > ?))
+         ORDER BY timestamp, id LIMIT ?`,
+        [cursorTs, cursorTs, cursorId, batchSize],
+      );
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        cursorTs = row.timestamp;
+        cursorId = row.id;
+        processed++;
+        const { keys } = identityKeysFor(row, watchlist);
+        const visit = this.recordWorkVisit({
+          keys,
+          title: row.title,
+          timestamp: row.timestamp,
+        });
+        if (visit.ambiguous) ambiguous++;
+        if (visit.created) created++;
+        if (visit.work) {
+          this._dbRun("UPDATE records SET workId = ? WHERE id = ?", [
+            visit.work.id,
+            row.id,
+          ]);
+          assigned++;
+        }
+      }
+
+      const progress = {
+        processed,
+        before: total,
+        assigned,
+        created,
+        remaining: total - assigned,
+      };
+      this._emit("worksBackfilledProgress", progress);
+      if (onProgress) onProgress(progress);
+    }
+
+    const result = {
+      before: total,
+      assigned,
+      created,
+      ambiguous,
+      // 每条记录只被游标扫到一次，且要么归属要么原地不动，所以剩余数可以直接算出来。
+      remaining: total - assigned,
+    };
+    this._emit("worksBackfilled", result);
+    return result;
   }
 
   // ── Recommendations ────────────────────────────────────────────────────────

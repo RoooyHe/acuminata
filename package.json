@@ -11,7 +11,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "test": "node agent/identity.test.js && node agent/cluster.test.js && node agent/record-store.test.js && node agent/providers.test.js && node agent/works.e2e.test.js && node test/ipc-contract.test.js",
+    "test": "node agent/identity.test.js && node agent/cluster.test.js && node agent/record-store.test.js && node agent/providers.test.js && node agent/works.e2e.test.js && node agent/backfill.e2e.test.js && node test/ipc-contract.test.js",
     "test:smoke": "electron test/smoke.electron.js"
   },
   "dependencies": {

@@ -15,6 +15,10 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     store.getWorksPage(page, pageSize, options),
   );
 
+  ipcMain.handle("works:unassigned-count", () => store.countUnassignedRecords());
+
+  ipcMain.handle("works:backfill", () => store.backfillWorks());
+
   ipcMain.handle("records:list", () => store.getAllRecords());
 
   ipcMain.handle("records:stats", () => store.getStats());
