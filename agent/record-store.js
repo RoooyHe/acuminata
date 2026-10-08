@@ -9,6 +9,8 @@ const {
   buildDeleteReflectionPrompt,
   buildRejectReflectionPrompt,
 } = require("./prompts");
+const { resolveWorkScore } = require("./cluster");
+const { KEY_KINDS, CONFIDENCE } = require("./identity");
 
 function uuid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -73,10 +75,34 @@ class RecordStore {
       "description TEXT DEFAULT ''",
       "ogImage TEXT DEFAULT ''",
       "dwellTime INTEGER DEFAULT 0",
+      "workId TEXT DEFAULT NULL",
     ];
     for (const col of cols) {
       try { this.db.run(`ALTER TABLE records ADD COLUMN ${col}`); } catch (e) {}
     }
+
+    // ── 作品：跨站融合的唯一落点（docs/adr/0007） ──
+    // works 用代理键：不存在一个跨站通用的单一身份字段。
+    this.db.run(`CREATE TABLE IF NOT EXISTS works (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      score INTEGER NOT NULL DEFAULT 0,
+      firstSeen INTEGER NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER DEFAULT NULL
+    )`);
+
+    // work_keys：一部作品可以有多个身份键，任一路命中即归并。
+    // PRIMARY KEY (kind, value) 保证一个键值只能指向一部作品。
+    this.db.run(`CREATE TABLE IF NOT EXISTS work_keys (
+      workId TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      value TEXT NOT NULL,
+      confidence TEXT NOT NULL DEFAULT 'medium',
+      createdAt INTEGER NOT NULL,
+      PRIMARY KEY (kind, value)
+    )`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_wk_work ON work_keys(workId)`);
 
     this.db.run(`CREATE TABLE IF NOT EXISTS watchlist (
       domain TEXT PRIMARY KEY,
@@ -473,7 +499,7 @@ class RecordStore {
   insertRecord(record) {
     const nowTs = now();
     this._dbRun(
-      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?)",
+      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?)",
       [
         record.id,
         record.url,
@@ -486,6 +512,7 @@ class RecordStore {
         record.favIconUrl || "",
         record.description || "",
         record.ogImage || "",
+        record.workId || null,
       ],
     );
     const full = this.getRecordById(record.id);
@@ -529,6 +556,122 @@ class RecordStore {
   clearRecords() {
     this._dbRun("DELETE FROM records");
     this._emit("recordsCleared");
+  }
+
+  // ── Works（作品） ────────────────────────────────────────────────────────────
+  // 作品是跨站融合的唯一落点；records 降为访问事件。见 docs/adr/0007。
+
+  getWork(id) {
+    return this._dbGet("SELECT * FROM works WHERE id = ?", [id]) || null;
+  }
+
+  getWorkKeys(workId) {
+    return this._dbAll(
+      "SELECT kind, value, confidence FROM work_keys WHERE workId = ? ORDER BY kind",
+      [workId],
+    );
+  }
+
+  /**
+   * 按身份键找出候选作品。返回**全部**命中的不同作品。
+   * 返生 2 条以上意味着两件已存在的作品其实是同一部——按 ADR-0002，
+   * 那是「误合」风险，应交给用户确认，不在这里静默合并。
+   * @param {Array<{kind:string,value:string,confidence:string}>} keys
+   * @param {"high"|"medium"|"low"} minConfidence
+   * @returns {Array<Object>} works 行，去重
+   */
+  findWorksByKeys(keys, minConfidence = "medium") {
+    const floor = CONFIDENCE[minConfidence];
+    const usable = (keys || []).filter(
+      (k) =>
+        KEY_KINDS.includes(k.kind) &&
+        k.value &&
+        CONFIDENCE[k.confidence] >= floor,
+    );
+    if (usable.length === 0) return [];
+
+    const clauses = usable.map(() => "(kind = ? AND value = ?)").join(" OR ");
+    const params = [];
+    for (const k of usable) params.push(k.kind, k.value);
+
+    return this._dbAll(
+      `SELECT DISTINCT w.* FROM work_keys k JOIN works w ON w.id = k.workId WHERE ${clauses}`,
+      params,
+    );
+  }
+
+  /** 把一个身份键挂到作品上。已存在的（kind, value）不重复插入。 */
+  linkWorkKeys(workId, keys) {
+    const nowTs = now();
+    let linked = 0;
+    for (const k of keys || []) {
+      if (!KEY_KINDS.includes(k.kind) || !k.value) continue;
+      const existing = this._dbGet(
+        "SELECT workId FROM work_keys WHERE kind = ? AND value = ?",
+        [k.kind, k.value],
+      );
+      if (existing) {
+        // 键值已被占用。同一作品：什么也不做；不同作品：那是需要用户裁决的冲突，不静默改指。
+        continue;
+      }
+      this._dbRun(
+        "INSERT INTO work_keys (workId, kind, value, confidence, createdAt) VALUES (?, ?, ?, ?, ?)",
+        [workId, k.kind, k.value, k.confidence || "medium", nowTs],
+      );
+      linked++;
+    }
+    return linked;
+  }
+
+  /**
+   * 一次访问落到作品上：找到就累加计分，找不到就建新的。
+   * 计分是**作品层**的：同一天最多 +1，无论从哪个站、哪个版本进入。
+   * @returns {{ work: Object|null, created: boolean, ambiguous: boolean }} work 为 null 表示降级（记录仍会存在）
+   */
+  recordWorkVisit({ keys, title, timestamp } = {}) {
+    const ts = timestamp || now();
+
+    // 只有高/中可信度的键才能归属作品。低可信度键（归一化标题）**不建也不合**：
+    // 宁可拆、不可合（ADR-0002）。否则每次只有标题的访问都会新建一个空作品，
+    // 而且那个作品连一个键都挂不上（键值已被上一个占用）。
+    const usable = (keys || []).filter(
+      (k) =>
+        KEY_KINDS.includes(k.kind) &&
+        k.value &&
+        CONFIDENCE[k.confidence] >= CONFIDENCE.medium,
+    );
+    if (usable.length === 0) {
+      // 归属不到作品，但记录照常存在——降级而非丢弃。
+      return { work: null, created: false, ambiguous: false };
+    }
+
+    const matches = this.findWorksByKeys(usable, "medium");
+    const ambiguous = matches.length > 1;
+    let work = matches[0] || null;
+    let created = false;
+
+    const scored = resolveWorkScore(work, ts);
+
+    if (!work) {
+      const id = uuid();
+      this._dbRun(
+        "INSERT INTO works (id, title, score, firstSeen, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
+        [id, title || "", scored.score, ts, scored.createdAt, scored.updatedAt],
+      );
+      work = this.getWork(id);
+      created = true;
+    } else {
+      this._dbRun(
+        "UPDATE works SET score = ?, title = ?, updatedAt = ? WHERE id = ?",
+        [scored.score, work.title || title || "", scored.updatedAt, work.id],
+      );
+      work = this.getWork(work.id);
+    }
+
+    // 低可信度键（如归一化标题）也入库：它们不参与自动合并，但是待确认队列的种子。
+    this.linkWorkKeys(work.id, keys);
+
+    return { work, created, ambiguous };
   }
 
   // ── Recommendations ────────────────────────────────────────────────────────
