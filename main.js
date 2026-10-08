@@ -257,6 +257,7 @@ function handleExtensionMessage(ws, msg) {
           timestamp: result.updates.timestamp,
           updatedAt: result.updates.updatedAt,
           workId,
+          edition: (result.extracted && result.extracted.edition) || "",
         });
         broadcastToExtensions({ type: "recordUpdated", record: result.record });
         return;
@@ -265,6 +266,8 @@ function handleExtensionMessage(ws, msg) {
       // insert
       msg.timestamp = nowTs;
       msg.workId = workId;
+      // 适配器的命名捕获组抠出的**版本**随访问落库（来源 = 站点 + 版本）。
+      msg.edition = (result.extracted && result.extracted.edition) || "";
       const record = store.insertRecord(msg);
       broadcastToExtensions({ type: "recordAdded", record });
       break;

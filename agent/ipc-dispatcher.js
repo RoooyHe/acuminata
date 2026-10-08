@@ -15,6 +15,8 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     store.getWorksPage(page, pageSize, options),
   );
 
+  ipcMain.handle("works:detail", (_, workId) => store.getWorkDetail(workId));
+
   ipcMain.handle("works:unattributed", (_, page, pageSize, search) =>
     store.getUnattributedPage(page, pageSize, search),
   );

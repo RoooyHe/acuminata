@@ -76,6 +76,7 @@ class RecordStore {
       "ogImage TEXT DEFAULT ''",
       "dwellTime INTEGER DEFAULT 0",
       "workId TEXT DEFAULT NULL",
+      "edition TEXT DEFAULT ''",
     ];
     for (const col of cols) {
       try { this.db.run(`ALTER TABLE records ADD COLUMN ${col}`); } catch (e) {}
@@ -510,7 +511,7 @@ class RecordStore {
   insertRecord(record) {
     const nowTs = now();
     this._dbRun(
-      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?)",
+      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId, edition, dwellTime) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?, ?, ?)",
       [
         record.id,
         record.url,
@@ -524,6 +525,8 @@ class RecordStore {
         record.description || "",
         record.ogImage || "",
         record.workId || null,
+        record.edition || "",
+        record.dwellTime || 0,
       ],
     );
     const full = this.getRecordById(record.id);
@@ -739,6 +742,38 @@ class RecordStore {
     });
 
     return { works, total, page, pageSize };
+  }
+
+  /**
+   * 单部作品的详情：它的全部**来源**（站点 + 版本 + 最近地址）与全部**访问**。
+   * 来源按 (站点, 版本) 分组——同名版本在不同站点上必须各占一行，不合并。
+   * @param {string} workId
+   * @returns {{ work: Object, sources: Array<Object>, visits: Array<Object> }|null} 作品不存在时 null
+   */
+  getWorkDetail(workId) {
+    const work = this.getWork(workId);
+    if (!work) return null;
+
+    const visits = this._dbAll(
+      `SELECT id, url, title, domain, matchedRule, timestamp, dwellTime, pinned, score, edition
+       FROM records WHERE workId = ? ORDER BY timestamp DESC`,
+      [workId],
+    );
+
+    const sources = this._dbAll(
+      `SELECT r.matchedRule, r.edition,
+              COUNT(*) AS visitCount,
+              MAX(r.timestamp) AS lastVisitAt,
+              (SELECT r2.url FROM records r2
+                 WHERE r2.workId = r.workId AND r2.matchedRule = r.matchedRule AND r2.edition = r.edition
+                 ORDER BY r2.timestamp DESC LIMIT 1) AS lastUrl
+       FROM records r WHERE r.workId = ?
+       GROUP BY r.matchedRule, r.edition
+       ORDER BY lastVisitAt DESC`,
+      [workId],
+    );
+
+    return { work, sources, visits };
   }
 
   /**

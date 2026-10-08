@@ -475,6 +475,57 @@ async function runTests() {
     assert(paged.records.length === 1 && paged.total === 2, "未归属列表分页只读一页");
   }
 
+  // ── 作品详情：来源（站点 + 版本）+ 访问 ──
+  console.log("\nTest: 作品详情 — 来源与访问");
+  {
+    const s = await initStore();
+    s.addWatchlist({ domain: "tvmao.com", label: "电视猫", color: "#fff" });
+    const day1 = new Date(2026, 3, 1, 10).getTime();
+    const day2 = new Date(2026, 3, 2, 10).getTime();
+    const w = s.recordWorkVisit({
+      keys: [{ kind: "code", value: "DETAIL-1", confidence: "high" }],
+      title: "详情作品",
+      timestamp: day1,
+    });
+    const workId = w.work.id;
+
+    // 来源 1：B站 / 中文字幕
+    s.insertRecord({ id: "d1", url: "https://bilibili.com/v/1", title: "详情作品", domain: "bilibili.com", matchedRule: "bilibili.com", tabId: 1, timestamp: day1, dwellTime: 120000, edition: "中文字幕", workId });
+    // 来源 2：同一站点、另一个版本
+    s.insertRecord({ id: "d2", url: "https://bilibili.com/v/2", title: "详情作品 无码", domain: "bilibili.com", matchedRule: "bilibili.com", tabId: 1, timestamp: day1 + 3600e3, edition: "无码", workId });
+    // 来源 3：电视猫 / 中文字幕 —— 与来源 1 同名版本，必须分别显示
+    s.insertRecord({ id: "d3", url: "https://tvmao.com/k/1", title: "详情作品", domain: "tvmao.com", matchedRule: "tvmao.com", tabId: 2, timestamp: day2, dwellTime: 5000, edition: "中文字幕", workId });
+    // 来源 4：电视猫 / 没有版本标注
+    s.insertRecord({ id: "d4", url: "https://tvmao.com/k/1?p=2", title: "详情作品", domain: "tvmao.com", matchedRule: "tvmao.com", tabId: 2, timestamp: day2 + 3600e3, edition: "", workId });
+
+    const detail = s.getWorkDetail(workId);
+    assert(detail.work.id === workId, "详情返回该作品");
+    assert(detail.visits.length === 4, "列出全部 4 次访问");
+    assert(detail.visits[0].id === "d4", "访问按时间倒序（最近在前）");
+    assert(detail.visits.find((v) => v.id === "d1").dwellTime === 120000, "访问携带停留时长");
+    assert(detail.visits.find((v) => v.id === "d1").edition === "中文字幕", "访问携带版本");
+
+    assert(detail.sources.length === 4, "四个来源全部列出，不合并成一行");
+    const biliZh = detail.sources.find((x) => x.matchedRule === "bilibili.com" && x.edition === "中文字幕");
+    const tvZh = detail.sources.find((x) => x.matchedRule === "tvmao.com" && x.edition === "中文字幕");
+    assert(!!biliZh && !!tvZh, "同名版本在不同站点分别显示（各自的站点可辨认）");
+    assert(biliZh.lastUrl === "https://bilibili.com/v/1", "来源携带最近地址");
+    assert(tvZh.lastUrl === "https://tvmao.com/k/1", "电视猫来源的最近地址");
+    assert(biliZh.visitCount === 1 && tvZh.visitCount === 1, "来源携带访问次数");
+
+    // 无来源 / 无访问：空状态，不崩
+    const empty = s.recordWorkVisit({
+      keys: [{ kind: "code", value: "DETAIL-EMPTY", confidence: "high" }],
+      title: "空作品",
+      timestamp: day1,
+    });
+    const emptyDetail = s.getWorkDetail(empty.work.id);
+    assert(emptyDetail.sources.length === 0, "没有来源时返回空数组");
+    assert(emptyDetail.visits.length === 0, "没有访问时返回空数组");
+
+    assert(s.getWorkDetail("no-such-work") === null, "不存在的作品返回 null");
+  }
+
   console.log("\n✅ All RecordStore tests passed!");
   process.exit(0);
 }
