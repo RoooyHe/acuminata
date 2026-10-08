@@ -187,6 +187,35 @@ function startExtensionServer() {
   });
 }
 
+// ── 适配器健康度 ──────────────────────────────────────────────────────────────
+// 区分「这一页不是作品页」（正常丢弃）与「适配器已失效」（会静默丢整段历史）。
+// 见 docs/adr/0003 的后果条：用户自己写适配器，改版是常态，静默失效是头号故障。
+const adapterStats = new Map(); // domain -> { matched, dropped }
+
+function noteAdapterResult(domain, matched) {
+  let s = adapterStats.get(domain);
+  if (!s) {
+    s = { matched: 0, dropped: 0 };
+    adapterStats.set(domain, s);
+  }
+  if (matched) s.matched++;
+  else s.dropped++;
+  if (!matched && s.matched === 0 && s.dropped === 20) {
+    console.warn(
+      `[Adapter] ${domain}: 已丢弃 ${s.dropped} 条且从未命中，适配器可能已失效（站点改版？）`,
+    );
+  }
+}
+
+function getAdapterHealth() {
+  return Array.from(adapterStats.entries()).map(([domain, s]) => ({
+    domain,
+    matched: s.matched,
+    dropped: s.dropped,
+    suspect: s.matched === 0 && s.dropped >= 20,
+  }));
+}
+
 function handleExtensionMessage(ws, msg) {
   switch (msg.type) {
     case "addRecord": {
@@ -209,8 +238,24 @@ function handleExtensionMessage(ws, msg) {
       };
 
       const result = evaluateIncoming(msg, store.getWatchlist(), findExisting);
+      noteAdapterResult(msg.domain, result.action !== "drop");
 
       if (result.action === "drop" || result.action === "ignore") return;
+
+      // 作品归属：身份键 → works（docs/adr/0007）。
+      // 产不出键时 work 为 null，记录照常存在，只是归不到作品——降级而非丢弃。
+      const visit = store.recordWorkVisit({
+        keys: result.keys,
+        title: (result.record && result.record.title) || msg.title,
+        timestamp: nowTs,
+      });
+      if (visit.ambiguous) {
+        console.warn(
+          "[Works] 身份键指向多个作品，需要用户裁决:",
+          JSON.stringify(result.keys),
+        );
+      }
+      const workId = visit.work ? visit.work.id : null;
 
       if (result.action === "update") {
         store.updateRecord(result.record.id, {
@@ -221,6 +266,7 @@ function handleExtensionMessage(ws, msg) {
           score: result.updates.score,
           timestamp: result.updates.timestamp,
           updatedAt: result.updates.updatedAt,
+          workId,
         });
         broadcastToExtensions({ type: "recordUpdated", record: result.record });
         return;
@@ -228,6 +274,7 @@ function handleExtensionMessage(ws, msg) {
 
       // insert
       msg.timestamp = nowTs;
+      msg.workId = workId;
       const record = store.insertRecord(msg);
       broadcastToExtensions({ type: "recordAdded", record });
       break;

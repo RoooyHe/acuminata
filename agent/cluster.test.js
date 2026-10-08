@@ -3,7 +3,7 @@
  * Run with: node agent/cluster.test.js
  */
 
-const { evaluateIncoming } = require('./cluster');
+const { evaluateIncoming, resolveWorkScore, extractFromRules } = require('./cluster');
 
 let passed = 0;
 let failed = 0;
@@ -235,6 +235,144 @@ async function runTests() {
     const findExisting = () => null;
     const result = evaluateIncoming(incoming, watchlist, findExisting);
     assert(result.action === "insert", 'inserts when groupLabel falls back to domain');
+  }
+
+  // ── 解析：命名捕获组从正则里抠出作品身份（闸门 → 解析器） ──
+  {
+    console.log('Parse: 命名捕获组');
+    const watchlist = makeWatchlist([
+      { domain: "example.com", label: "Videos", regexFilter: "/tv/(?<code>[0-9]+)/", regexTarget: "url" },
+    ]);
+    const incoming = {
+      url: "https://example.com/tv/94425/",
+      title: "某某剧 - 第1集",
+      domain: "example.com",
+      matchedRule: "example.com",
+      tabId: 1,
+      timestamp: Date.now(),
+    };
+    const result = evaluateIncoming(incoming, watchlist, () => null);
+    assert(result.action === 'insert', '仍会插入');
+    assert(result.extracted.code === '94425', '从 url 里抠出 code');
+    const codeKey = result.keys.find((k) => k.kind === 'code');
+    assert(!!codeKey, '产出了 code 身份键');
+    assert(codeKey.confidence === 'high', 'code 是高可信度');
+  }
+
+  // ── 解析：只有标题时也能产出键（降级，不丢弃） ──
+  {
+    console.log('Parse: 没有捕获组时降级');
+    const watchlist = makeWatchlist([
+      { domain: "example.com", label: "Videos", regexFilter: "/tv/", regexTarget: "url" },
+    ]);
+    const incoming = {
+      url: "https://example.com/tv/94425/",
+      title: "某某剧 高清在线观看",
+      domain: "example.com",
+      matchedRule: "example.com",
+      tabId: 1,
+      timestamp: Date.now(),
+    };
+    const result = evaluateIncoming(incoming, watchlist, () => null);
+    assert(result.action === 'insert', '旧规则（无捕获组）仍能插入，不被丢弃');
+    assert(Object.keys(result.extracted).length === 0, '抠不出任何东西');
+    assert(
+      result.keys.some((k) => k.kind === 'title' && k.value === '某某剧'),
+      '降级到标题键',
+    );
+    assert(
+      !result.keys.some((k) => k.confidence === 'high'),
+      '降级时没有高可信度键',
+    );
+  }
+
+  // ── 丢弃要带原因（供适配器健康度统计） ──
+  {
+    console.log('Parse: 丢弃带原因');
+    const watchlist = makeWatchlist([
+      { domain: "example.com", label: "Videos", regexFilter: "/tv/", regexTarget: "url" },
+    ]);
+    const incoming = {
+      url: "https://example.com/latest/",
+      title: "最新更新",
+      domain: "example.com",
+      matchedRule: "example.com",
+      tabId: 1,
+      timestamp: Date.now(),
+    };
+    const result = evaluateIncoming(incoming, watchlist, () => null);
+    assert(result.action === 'drop', '列表页被丢弃');
+    assert(result.reason === 'no-rule-match', '带出丢弃原因');
+  }
+
+  // ── extractFromRules 直接测 ──
+  {
+    console.log('extractFromRules');
+    const rules = [
+      { regexFilter: "/upload/vod/[0-9-]+/(?<coverHash>[0-9a-f]{32})\\.", regexTarget: "url" },
+      { regexFilter: "(?<edition>中文字幕|无码)", regexTarget: "title" },
+    ];
+    const got = extractFromRules(
+      rules,
+      "某某剧 中文字幕",
+      "https://x.com/upload/vod/20260101-1/c0a55b31c915cab3d80e9863f54f2ee0.webp",
+    );
+    assert(got.coverHash === 'c0a55b31c915cab3d80e9863f54f2ee0', '从 url 抠出封面哈希');
+    assert(got.edition === '中文字幕', '从 title 抠出版本');
+  }
+
+  // ── 无效正则不能招死循环 ──
+  {
+    console.log('extractFromRules: 无效正则');
+    const got = extractFromRules(
+      [{ regexFilter: "(?<broken>[unclosed", regexTarget: "url" }],
+      "t",
+      "https://example.com/x",
+    );
+    assert(Object.keys(got).length === 0, '无效正则被忽略，不抛错');
+  }
+
+  // ── 作品层计分：这是本轮的钱测试 ──
+  {
+    console.log('resolveWorkScore: 跨站累加到同一个作品');
+    const day1 = new Date('2026-03-01T10:00:00').getTime();
+    const day1later = new Date('2026-03-01T22:00:00').getTime();
+    const day2 = new Date('2026-03-02T10:00:00').getTime();
+    const day3 = new Date('2026-03-03T10:00:00').getTime();
+
+    const created = resolveWorkScore(null, day1);
+    assert(created.created === true, '第一次见到就有作品');
+    assert(created.score === 1, '新建作品分数为 1');
+
+    const sameS = resolveWorkScore(created, day1later);
+    assert(sameS.score === 1, '同一天再访问，不加分');
+
+    const next = resolveWorkScore(sameS, day2);
+    assert(next.score === 2, '隔天 +1');
+
+    const third = resolveWorkScore(next, day3);
+    assert(third.score === 3, '再隔一天再 +1');
+  }
+
+  {
+    console.log('resolveWorkScore: 跨站合并 —— A 站 3 天 + B 站 1 次 = 4 分一条');
+    const day = (n, h) => new Date(2026, 2, n, h).getTime();
+    let work = null;
+    work = resolveWorkScore(work, day(1, 10)); // A 站 day1
+    work = resolveWorkScore(work, day(2, 10)); // A 站 day2
+    work = resolveWorkScore(work, day(3, 10)); // A 站 day3
+    work = resolveWorkScore(work, day(4, 10)); // B 站 day4（同一部作品，不同站点）
+    assert(work.score === 4, '四个不同日子 = 4 分，落在同一条作品上');
+  }
+
+  {
+    console.log('resolveWorkScore: 一天只加一次');
+    const t0 = new Date(2026, 2, 1, 1).getTime();
+    let work = resolveWorkScore(null, t0);
+    for (let h = 2; h < 24; h++) {
+      work = resolveWorkScore(work, new Date(2026, 2, 1, h).getTime());
+    }
+    assert(work.score === 1, '同一天内 23 次访问只算 1 分');
   }
 
   console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

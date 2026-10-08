@@ -75,9 +75,11 @@ Once built, load the unpacked extension from `extend/build/chrome-mv3-prod/` in 
 
 Core data is stored locally in `tracker.db`:
 
-* `records`: Stores detailed browsing paths, scores, pin status, and timestamps.
-* `watchlist`: Stores monitored sites, camouflage labels, color identifiers, and regex rules.
-* `agent_memories`: Stores learned user preferences, anti-patterns, and profile update logs.
+* `records`: 每一次访问（URL、标题、停留时长、时间戳）。一次访问是一条，不合并。
+* `works`: 作品本身——所有内容融合的唯一落点。**每日 +1 计分在这里**，所以同一部作品在两个站上看，分数累加到一处。
+* `work_keys`: 一部作品可以挂多个身份键（内容编号 / 封面图哈希 / 归一化标题 / 简介指纹），任一路命中即归并。
+* `watchlist`: 登记过的站点，以及该站适配器的规则（含命名捕获组）。
+* `agent_memories`: 学到的用户偏好、反模式、画像更新日志。
 
 ---
 
