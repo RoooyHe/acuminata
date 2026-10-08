@@ -469,6 +469,39 @@ document.getElementById("btnBackToWorks").onclick = function () {
   document.getElementById("workDetailView").style.display = "none";
 };
 
+// --- 历史回填（issue #6）：把已有访问归入作品，进度与前后计数都摆在界面上 ---
+let backfillRunning = false;
+
+function setBackfillStatus(text) {
+  const el = document.getElementById("worksBackfillStatus");
+  if (el) el.textContent = text;
+}
+
+document.getElementById("btnWorksBackfill").onclick = async function () {
+  if (backfillRunning) return;
+  backfillRunning = true;
+  this.disabled = true;
+  const before = health ? health.unattributedCount : 0;
+  setBackfillStatus(`回填中… 0 / ${before}`);
+  try {
+    const r = await window.electronAPI.backfillWorks();
+    let text = `回填完成：未归属 ${r.before} → ${r.remaining} 条，归入 ${r.assigned} 条访问，新建 ${r.created} 部作品`;
+    // 剩下的不是失败：那些访问没有可用的身份键，或身份键指向多部作品。
+    if (r.remaining > 0) text += `；${r.remaining} 条没有可用的身份键`;
+    if (r.ambiguous > 0) text += `；${r.ambiguous} 条身份键有冲突`;
+    setBackfillStatus(text);
+    await refreshStats();
+    await loadHealth();
+    renderWorksSiteBar();
+    await loadWorks(1);
+  } catch (e) {
+    setBackfillStatus(`回填失败：${(e && e.message) || e}`);
+  } finally {
+    backfillRunning = false;
+    this.disabled = false;
+  }
+};
+
 // --- 事件监听 ---
 document.querySelectorAll(".nav-item").forEach((item) => {
   item.onclick = function () {
@@ -713,6 +746,8 @@ window.electronAPI.onUpdate((data) => {
     // 丢弃/去重不产生 recordAdded，健康度由主进程主动推。
     if (health) health.adapters = data.adapters || [];
     renderAdapterHealth();
+  } else if (data.type === "worksBackfilledProgress") {
+    setBackfillStatus(`回填中… ${data.processed} / ${data.before}`);
   } else if (data.type === "agentPendingUpdated") {
     loadPendingActions();
   }

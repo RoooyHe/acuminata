@@ -110,6 +110,7 @@ function pageProbe(invokeRoutes) {
       unregistered: [],
       watchlistText: "",
       worksText: "",
+      backfillText: "",
       worksHealthText: "",
       unattributedText: "",
       sourcesText: "",
@@ -190,6 +191,22 @@ function pageProbe(invokeRoutes) {
         }
       }
     }
+
+    // 回填是一次可观察的操作：按钮点下去，进度与最终计数要落到状态行上。
+    const backfillBtn = document.getElementById("btnWorksBackfill");
+    const backfillStatus = document.getElementById("worksBackfillStatus");
+    if (backfillBtn) {
+      backfillBtn.click();
+      const backfillDeadline = Date.now() + 10000;
+      while (
+        backfillStatus &&
+        !/回填完成|回填失败/.test(backfillStatus.textContent) &&
+        Date.now() < backfillDeadline
+      ) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    out.backfillText = backfillStatus ? backfillStatus.textContent : "";
     return out;
   })()`;
 }
@@ -294,6 +311,10 @@ async function main() {
   expect(
     probe.unattributedText.includes(SEED_UNATTR_TITLE),
     "未归类 group did not list the unattributed visit",
+  );
+  expect(
+    /回填完成：未归属 \d+ → \d+ 条/.test(probe.backfillText),
+    "renderer did not report backfill progress/counts: " + probe.backfillText,
   );
   expect(
     consoleErrors.length === 0,

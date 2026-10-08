@@ -127,6 +127,33 @@ function computeDailyScore(existing, now) {
   return { newPinned, newScore, newUpdatedAt };
 }
 
+/**
+ * 一条访问的作品身份键：适配器的命名捕获组 + 页面字段。
+ *
+ * 实时上报（evaluateIncoming）与历史回填共用这一条路径（docs/adr/0002：
+ * 判定只做一次、结论落库）。这里**不含闸门**——闸门只决定「这一页要不要收」，
+ * 回填面对的是已经收下的历史，不能因为适配器今天不匹配就把旧访问判死。
+ *
+ * @returns {{ extracted: object, keys: Array<{kind:string,value:string,confidence:string}> }}
+ */
+function identityKeysFor(incoming, watchlist, groupRules) {
+  const rules =
+    groupRules ||
+    getGroupRules(
+      resolveGroupLabel(incoming.matchedRule, incoming.domain, watchlist),
+      watchlist,
+    );
+  const extracted = extractFromRules(rules, incoming.title, incoming.url);
+  const keys = extractKeys({
+    url: incoming.url,
+    title: incoming.title,
+    description: incoming.description,
+    ogImage: incoming.ogImage,
+    extracted,
+  });
+  return { extracted, keys };
+}
+
 function evaluateIncoming(incoming, watchlist, findExisting) {
   const now = incoming.timestamp || Date.now();
 
@@ -143,14 +170,7 @@ function evaluateIncoming(incoming, watchlist, findExisting) {
   }
 
   // 2b. 从命名捕获组里抠出作品身份，并汇总成身份键
-  const extracted = extractFromRules(groupRules, incoming.title, incoming.url);
-  const keys = extractKeys({
-    url: incoming.url,
-    title: incoming.title,
-    description: incoming.description,
-    ogImage: incoming.ogImage,
-    extracted,
-  });
+  const { extracted, keys } = identityKeysFor(incoming, watchlist, groupRules);
 
   // 3. Group domains
   const groupDomains = getGroupDomains(groupLabel, watchlist, incoming.matchedRule);
@@ -258,6 +278,7 @@ function resolveWorkScore(existingWork, now) {
 
 module.exports = {
   evaluateIncoming,
+  identityKeysFor,
   resolveWorkScore,
   extractFromRules,
   matchesRegex,

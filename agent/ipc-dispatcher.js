@@ -27,6 +27,8 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     adapters: getAdapterHealth(),
   }));
 
+  ipcMain.handle("works:backfill", () => store.backfillWorks());
+
   ipcMain.handle("records:list", () => store.getAllRecords());
 
   ipcMain.handle("records:stats", () => store.getStats());
