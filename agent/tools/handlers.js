@@ -1,5 +1,7 @@
 // Pure tool handler computations for the agent.
-// Read handlers receive a read-only store; write handlers receive the full context.
+// Read handlers receive a read-only store; write handlers receive the same context
+// and only compute. The orchestrator applies their _sideEffects through named
+// store operations — no raw SQL here.
 // No side effects here: no DB writes, no broadcasts, no queue mutations.
 
 function searchRecords(args, ctx) {
@@ -37,17 +39,10 @@ function getAgentProfile(args, ctx) {
 function deleteRecords(args, ctx) {
   const ids = args.ids;
   if (!ids || ids.length === 0) return { error: "No IDs provided" };
-  const placeholders = ids.map(() => "?").join(",");
-  const deletedRecords = ctx.dbAll(
-    `SELECT * FROM records WHERE id IN (${placeholders})`,
-    ids,
-  );
   return {
-    deleted: deletedRecords.length,
     reason: args.reason || "",
     _sideEffects: {
       deleteIds: ids,
-      deletedRecords,
       reason: args.reason || "",
     },
   };

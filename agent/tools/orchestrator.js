@@ -5,13 +5,8 @@ const { getHandler, getAllHandlerNames } = require("./handlers");
 
 function createExecuteTool(ctx) {
   const {
-    dbAll,
-    dbGet,
-    dbRun,
-    broadcastToExtensions,
+    writeStore,
     watchlist,
-    enabled,
-    buildAgentProfile,
     triggerReflectionOnDelete,
     readStore,
   } = ctx;
@@ -20,111 +15,64 @@ function createExecuteTool(ctx) {
     const handler = getHandler(name);
     if (!handler) return { error: "Unknown tool: " + name };
     try {
-      return handler(args, {
-        readStore,
-        watchlist,
-        enabled,
-        buildAgentProfile,
-      });
+      return handler(args, { readStore, watchlist });
     } catch (e) {
       return { error: "Tool execution failed: " + e.message };
     }
   }
 
-  function executeWrite(name, args, broadcastFn) {
+  function executeWrite(name, args) {
     const handler = getHandler(name);
     if (!handler) return { error: "Unknown tool: " + name };
 
-    const sideEffects = handler(args, {
-      dbAll,
-      dbGet,
-      dbRun,
-      watchlist,
-      enabled,
-      buildAgentProfile,
-    });
+    const computed = handler(args, { readStore, watchlist });
+    if (computed.error) return computed;
+    const se = computed._sideEffects;
 
-    if (sideEffects.error) return sideEffects;
-
-    // Perform side effects
-    if (name === "delete_records" && sideEffects._sideEffects) {
-      const { deleteIds, deletedRecords, reason } = sideEffects._sideEffects;
-      const placeholders = deleteIds.map(() => "?").join(",");
-      dbRun(`DELETE FROM records WHERE id IN (${placeholders})`, deleteIds);
-      broadcastToExtensions({ type: "recordsCleared" });
+    if (name === "delete_records" && se) {
+      const { deleteIds, reason } = se;
+      const { deletedCount, deletedRecords } = writeStore.deleteRecords(deleteIds);
       if (deletedRecords.length > 0) {
         setImmediate(() => triggerReflectionOnDelete(deletedRecords));
       }
-      return { deleted: sideEffects.deleted, reason };
+      return { deleted: deletedCount, reason };
     }
 
-    if (name === "update_regex_rule" && sideEffects._sideEffects) {
-      const { domain, regexFilter, regexTarget, reason } =
-        sideEffects._sideEffects;
-      const idx = watchlist.findIndex((w) => w.domain === domain);
-      if (idx >= 0) {
-        watchlist[idx].regexFilter = regexFilter;
-        watchlist[idx].regexTarget = regexTarget;
-      }
-      dbRun(
-        "UPDATE watchlist SET regexFilter = ?, regexTarget = ? WHERE domain = ?",
-        [regexFilter, regexTarget, domain],
+    if (name === "update_regex_rule" && se) {
+      const { domain, regexFilter, regexTarget, reason } = se;
+      const updated = writeStore.updateWatchlistRegex(
+        domain,
+        regexFilter,
+        regexTarget,
       );
-      broadcastToExtensions({ type: "watchlistUpdated", watchlist });
+      if (!updated) return { error: "Domain not found in watchlist" };
       return {
-        updated: sideEffects.updated,
-        regex_filter: sideEffects.regex_filter,
-        regex_target: sideEffects.regex_target,
+        updated: domain,
+        regex_filter: regexFilter,
+        regex_target: regexTarget,
         reason,
       };
     }
 
-    if (name === "update_record_score" && sideEffects._sideEffects) {
-      const { id, score } = sideEffects._sideEffects;
-      dbRun("UPDATE records SET score = ?, updatedAt = ? WHERE id = ?", [
-        score,
-        Date.now(),
-        id,
-      ]);
-      const record = dbGet("SELECT * FROM records WHERE id = ?", [id]);
-      if (record) broadcastToExtensions({ type: "recordUpdated", record });
+    if (name === "update_record_score" && se) {
+      const { id, score } = se;
+      const record = writeStore.updateRecordScore(id, score);
       return record ? { updated: id, score } : { error: "Record not found" };
     }
 
-    if (name === "add_record" && sideEffects._sideEffects) {
-      const { record, reason } = sideEffects._sideEffects;
-      dbRun(
-        "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, '', '', '')",
-        [
-          record.id,
-          record.url,
-          record.title,
-          record.domain,
-          record.matchedRule,
-          record.tabId,
-          record.timestamp,
-          record.timestamp,
-          record.timestamp,
-        ],
-      );
-      const fullRecord = {
-        ...record,
-        pinned: 1,
-        score: 1,
-        createdAt: record.timestamp,
-        updatedAt: record.timestamp,
-      };
-      broadcastToExtensions({ type: "recordAdded", record: fullRecord });
+    if (name === "add_record" && se) {
+      const { record, reason } = se;
+      writeStore.addAgentRecord(record);
       return { added: record.id, url: record.url, reason };
     }
 
-    return sideEffects;
+    return computed;
   }
 
-  function executeTool(name, args, broadcastFn) {
+  function executeTool(name, args) {
     const tool = ctx.getTool(name);
     if (tool && tool.category === "write") {
-      return executeWrite(name, args, broadcastFn);
+      return executeWrite(name, args);
     }
     return executeRead(name, args);
   }

@@ -123,13 +123,8 @@ async function init() {
 
   // Agent tooling
   const executeTool = createExecuteTool({
-    dbAll: store._dbAll.bind(store),
-    dbGet: store._dbGet.bind(store),
-    dbRun: store._dbRun.bind(store),
-    broadcastToExtensions: (data) => broadcastToExtensions(data),
+    writeStore: store.getAgentWriteStore(),
     watchlist: store.getWatchlist(),
-    enabled: store.getEnabled(),
-    buildAgentProfile: store.buildAgentProfile.bind(store),
     triggerReflectionOnDelete: triggerReflectionOnDelete,
     getTool,
     readStore: store.getAgentReadStore(),

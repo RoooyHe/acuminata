@@ -303,6 +303,24 @@ class RecordStore {
     this._emit("watchlistUpdated", this.getWatchlist());
   }
 
+  /** Update one watchlist domain's regex rule. Returns the row, or null if unknown. */
+  updateWatchlistRegex(domain, regexFilter, regexTarget) {
+    const exists = this._dbGet(
+      "SELECT domain FROM watchlist WHERE domain = ?",
+      [domain],
+    );
+    if (!exists) return null;
+    this._dbRun(
+      "UPDATE watchlist SET regexFilter = ?, regexTarget = ? WHERE domain = ?",
+      [regexFilter, regexTarget, domain],
+    );
+    const updated = this._dbGet("SELECT * FROM watchlist WHERE domain = ?", [
+      domain,
+    ]);
+    this._emit("watchlistUpdated", { watchlist: this.getWatchlist() });
+    return updated;
+  }
+
   // ── Enabled ────────────────────────────────────────────────────────────────
 
   getEnabled() {
@@ -577,6 +595,40 @@ class RecordStore {
     const record = this.getRecordById(id);
     if (record) this._emit("recordUpdated", record);
     return record;
+  }
+
+  /** Set one record's score. Returns the updated row, or null if unknown. */
+  updateRecordScore(id, score) {
+    this._dbRun("UPDATE records SET score = ?, updatedAt = ? WHERE id = ?", [
+      score,
+      now(),
+      id,
+    ]);
+    const record = this.getRecordById(id);
+    if (record) this._emit("recordUpdated", { record });
+    return record;
+  }
+
+  /** Insert a record the agent added: pinned and scored 1. Returns the row. */
+  addAgentRecord(record) {
+    const ts = record.timestamp || now();
+    this._dbRun(
+      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, '', '', '')",
+      [
+        record.id,
+        record.url,
+        record.title || "",
+        record.domain,
+        record.matchedRule,
+        record.tabId || 0,
+        ts,
+        ts,
+        ts,
+      ],
+    );
+    const full = this.getRecordById(record.id);
+    this._emit("recordAdded", { record: full });
+    return full;
   }
 
   clearRecords() {
@@ -1199,6 +1251,26 @@ class RecordStore {
       },
       getAgentProfile() {
         return self.buildAgentProfile();
+      },
+    };
+  }
+
+  // Named write operations the agent tools may use. Deliberately narrow:
+  // no SQL handle, no event emission entry point.
+  getAgentWriteStore() {
+    const self = this;
+    return {
+      deleteRecords(ids) {
+        return self.deleteRecords(ids);
+      },
+      updateWatchlistRegex(domain, regexFilter, regexTarget) {
+        return self.updateWatchlistRegex(domain, regexFilter, regexTarget);
+      },
+      updateRecordScore(id, score) {
+        return self.updateRecordScore(id, score);
+      },
+      addAgentRecord(record) {
+        return self.addAgentRecord(record);
       },
     };
   }
