@@ -58,7 +58,7 @@ async function runTests() {
 
   // ── ① 回填前：历史躺在库里，但一条都没归属 ──
   console.log("① 回填前的状态");
-  assert(store.countUnassignedRecords() === 3, "3 条历史访问全部未归属");
+  assert(store.getUnattributedCount() === 3, "3 条历史访问全部未归属");
   const empty = store.getWorksPage(1, 50);
   assert(empty.total === 0, "作品列表是空的——界面上还看不到跨站融合");
 
@@ -148,7 +148,7 @@ async function runTests() {
     threw = true;
   }
   assert(threw, "回填在中途真的中断了");
-  const partial = store2.countUnassignedRecords();
+  const partial = store2.getUnattributedCount();
   assert(partial === 1, "中断处留下一批已处理、一批未处理");
 
   const r3 = store2.backfillWorks();

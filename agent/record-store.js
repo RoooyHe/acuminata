@@ -76,6 +76,7 @@ class RecordStore {
       "ogImage TEXT DEFAULT ''",
       "dwellTime INTEGER DEFAULT 0",
       "workId TEXT DEFAULT NULL",
+      "edition TEXT DEFAULT ''",
     ];
     for (const col of cols) {
       try { this.db.run(`ALTER TABLE records ADD COLUMN ${col}`); } catch (e) {}
@@ -510,7 +511,7 @@ class RecordStore {
   insertRecord(record) {
     const nowTs = now();
     this._dbRun(
-      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?)",
+      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId, edition, dwellTime) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?, ?, ?)",
       [
         record.id,
         record.url,
@@ -524,6 +525,8 @@ class RecordStore {
         record.description || "",
         record.ogImage || "",
         record.workId || null,
+        record.edition || "",
+        record.dwellTime || 0,
       ],
     );
     const full = this.getRecordById(record.id);
@@ -741,11 +744,72 @@ class RecordStore {
     return { works, total, page, pageSize };
   }
 
-  /** 还没归入作品的访问数。回填前后各读一次，对比可见。 */
-  countUnassignedRecords() {
-    return this._dbGetScalar(
-      "SELECT COUNT(*) as count FROM records WHERE workId IS NULL",
+  /**
+   * 单部作品的详情：它的全部**来源**（站点 + 版本 + 最近地址）与全部**访问**。
+   * 来源按 (站点, 版本) 分组——同名版本在不同站点上必须各占一行，不合并。
+   * @param {string} workId
+   * @returns {{ work: Object, sources: Array<Object>, visits: Array<Object> }|null} 作品不存在时 null
+   */
+  getWorkDetail(workId) {
+    const work = this.getWork(workId);
+    if (!work) return null;
+
+    const visits = this._dbAll(
+      `SELECT id, url, title, domain, matchedRule, timestamp, dwellTime, pinned, score, edition
+       FROM records WHERE workId = ? ORDER BY timestamp DESC`,
+      [workId],
     );
+
+    const sources = this._dbAll(
+      `SELECT r.matchedRule, r.edition,
+              COUNT(*) AS visitCount,
+              MAX(r.timestamp) AS lastVisitAt,
+              (SELECT r2.url FROM records r2
+                 WHERE r2.workId = r.workId AND r2.matchedRule = r.matchedRule AND r2.edition = r.edition
+                 ORDER BY r2.timestamp DESC LIMIT 1) AS lastUrl
+       FROM records r WHERE r.workId = ?
+       GROUP BY r.matchedRule, r.edition
+       ORDER BY lastVisitAt DESC`,
+      [workId],
+    );
+
+    return { work, sources, visits };
+  }
+
+  /**
+   * 未归属访问：认不出作品的访问（workId IS NULL）。
+   * 这是降级路径的可见化——它们照常留在 records 里，只是一条都没归到作品。
+   * 聚合走 SQL：只读一页，不把全部记录读进内存。
+   * @param {number} page 1 起
+   * @param {number} pageSize
+   * @param {string} [search] 匹配标题 / URL / 站点
+   * @returns {{ records: Array<Object>, total: number, page: number, pageSize: number }}
+   */
+  getUnattributedPage(page = 1, pageSize = 100, search = "") {
+    const offset = (page - 1) * pageSize;
+    const q = (search || "").trim();
+    let where = "WHERE workId IS NULL";
+    let params = [];
+    if (q) {
+      where += " AND (title LIKE ? OR url LIKE ? OR matchedRule LIKE ?)";
+      params = [`%${q}%`, `%${q}%`, `%${q}%`];
+    }
+    const total = this._dbGet(
+      `SELECT COUNT(*) as total FROM records ${where}`,
+      params,
+    ).total;
+    const records = this._dbAll(
+      `SELECT * FROM records ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+      [...params, pageSize, offset],
+    );
+    return { records, total, page, pageSize };
+  }
+
+  /** 未归属访问的总数（作品视图的「未归类」分组要显示它）。 */
+  getUnattributedCount() {
+    return this._dbGet(
+      "SELECT COUNT(*) as total FROM records WHERE workId IS NULL",
+    ).total;
   }
 
   /**
@@ -767,7 +831,7 @@ class RecordStore {
    */
   backfillWorks({ onProgress, batchSize = 200 } = {}) {
     const watchlist = this.getWatchlist();
-    const total = this.countUnassignedRecords();
+    const total = this.getUnattributedCount();
     let assigned = 0;
     let created = 0;
     let ambiguous = 0;

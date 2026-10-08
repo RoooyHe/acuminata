@@ -533,20 +533,6 @@
                         <rect x="3" y="14" width="7" height="7" /></svg
                     >总览
                 </div>
-                <div class="nav-item" data-target="history">
-                    <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                    >
-                        <polyline
-                            points="22 12 18 12 15 21 9 3 6 12 2 12"
-                        /></svg
-                    >监控历史
-                </div>
                 <div class="nav-item" data-target="ai-agent">
                     <svg
                         width="16"
@@ -586,43 +572,141 @@
 
         <main class="main-content">
             <div id="works" class="tab-panel active">
-                <div
-                    style="
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                        margin-bottom: 24px;
-                    "
-                >
-                    <h2 style="margin-bottom: 0">作品</h2>
+                <div id="worksListView">
                     <div
-                        class="filter-bar"
-                        id="worksSortBar"
-                        style="margin-bottom: 0; padding-bottom: 0"
+                        style="
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            margin-bottom: 24px;
+                        "
                     >
-                        <div class="filter-chip active" data-sort="score">
-                            按分数
-                        </div>
-                        <div class="filter-chip" data-sort="recent">
-                            按最近访问
+                        <h2 style="margin-bottom: 0">作品</h2>
+                        <div
+                            class="filter-bar"
+                            id="worksSortBar"
+                            style="margin-bottom: 0; padding-bottom: 0"
+                        >
+                            <div class="filter-chip active" data-sort="score">
+                                按分数
+                            </div>
+                            <div class="filter-chip" data-sort="recent">
+                                按最近访问
+                            </div>
                         </div>
                     </div>
+                    <div id="worksHealth"></div>
+                    <div class="toolbar">
+                        <span
+                            id="worksBackfillStatus"
+                            style="
+                                color: var(--muted-fg);
+                                font-size: 12px;
+                                flex: 1;
+                            "
+                        ></span>
+                        <button class="btn btn-ghost" id="btnWorksBackfill">
+                            回填历史
+                        </button>
+                    </div>
+                    <div class="filter-bar" id="worksSiteBar"></div>
+                    <div class="data-list" id="worksContainer"></div>
+                    <div
+                        id="worksLoadMoreContainer"
+                        style="padding: 20px; text-align: center"
+                    ></div>
                 </div>
-                <div class="filter-bar" id="worksSiteBar"></div>
-                <div class="toolbar">
-                    <span
-                        id="worksBackfillStatus"
-                        style="color: var(--muted-fg); font-size: 12px; flex: 1"
-                    ></span>
-                    <button class="btn btn-ghost" id="btnWorksBackfill">
-                        回填历史
+
+                <div id="workDetailView" style="display: none">
+                    <button
+                        class="btn btn-ghost"
+                        id="btnBackToWorks"
+                        style="margin-bottom: 16px"
+                    >
+                        ← 返回作品
                     </button>
+                    <div
+                        style="
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: flex-start;
+                            gap: 16px;
+                            margin-bottom: 24px;
+                        "
+                    >
+                        <div style="min-width: 0">
+                            <h2
+                                id="workDetailTitle"
+                                style="margin-bottom: 8px"
+                            ></h2>
+                            <div class="item-meta" id="workDetailMeta"></div>
+                        </div>
+                        <button class="btn" id="btnOpenLatest">
+                            打开最近访问
+                        </button>
+                    </div>
+                    <div class="setting-header" style="margin-bottom: 12px">
+                        来源
+                    </div>
+                    <div class="data-list" id="workSources"></div>
+                    <div class="setting-header" style="margin: 24px 0 12px">
+                        访问
+                    </div>
+                    <div class="toolbar">
+                        <input
+                            type="text"
+                            class="search-input"
+                            id="searchInput"
+                            placeholder="搜索这部作品的访问..."
+                        />
+                        <button
+                            id="btnBatchDelete"
+                            class="btn btn-danger"
+                            style="display: none"
+                        >
+                            删除选中 (0)
+                        </button>
+                    </div>
+                    <div class="data-list" id="recordsContainer"></div>
                 </div>
-                <div class="data-list" id="worksContainer"></div>
-                <div
-                    id="worksLoadMoreContainer"
-                    style="padding: 20px; text-align: center"
-                ></div>
+                <div id="unattributedPanel" style="display: none">
+                    <div
+                        style="
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            margin-bottom: 24px;
+                        "
+                    >
+                        <div>
+                            <h2 style="margin-bottom: 4px">未归类访问</h2>
+                            <div
+                                style="
+                                    color: var(--muted-fg);
+                                    font-size: 12px;
+                                "
+                            >
+                                认不出作品的访问。它们不会被丢弃，只是还没归到作品。
+                            </div>
+                        </div>
+                        <button class="btn btn-ghost" id="btnUnattributedBack">
+                            ← 返回作品
+                        </button>
+                    </div>
+                    <div class="toolbar">
+                        <input
+                            type="text"
+                            class="search-input"
+                            id="unattributedSearchInput"
+                            placeholder="搜索未归类访问的标题、URL 或站点..."
+                        />
+                    </div>
+                    <div class="data-list" id="unattributedContainer"></div>
+                    <div
+                        id="unattributedLoadMoreContainer"
+                        style="padding: 20px; text-align: center"
+                    ></div>
+                </div>
             </div>
 
             <div id="overview" class="tab-panel">
@@ -651,34 +735,19 @@
                         </div>
                     </div>
                 </div>
-            </div>
-
-            <div id="history" class="tab-panel">
-                <h2>监控的历史</h2>
-                <div class="toolbar">
-                    <input
-                        type="text"
-                        class="search-input"
-                        id="searchInput"
-                        placeholder="搜索标题、URL、或番号..."
-                    />
-                    <button
-                        id="btnBatchDelete"
-                        class="btn btn-danger"
-                        style="display: none"
-                    >
-                        删除选中 (0)
-                    </button>
+                <div class="card">
+                    <div class="metric-title">
+                        适配器命中情况
+                        <span
+                            style="
+                                font-family: var(--font-mono);
+                                font-size: 11px;
+                            "
+                            id="adapterHealthSummary"
+                        ></span>
+                    </div>
+                    <div id="adapterHealth" style="margin-top: 12px"></div>
                 </div>
-                <div class="filter-bar" id="filterBar">
-                    <div class="filter-chip active" data-domain="all">全部</div>
-                    <div class="filter-chip" data-domain="pinned">★ 已收藏</div>
-                </div>
-                <div class="data-list" id="recordsContainer"></div>
-                <div
-                    id="loadMoreContainer"
-                    style="padding: 20px; text-align: center"
-                ></div>
             </div>
 
             <div id="ai-agent" class="tab-panel">

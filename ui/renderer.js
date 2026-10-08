@@ -6,12 +6,7 @@ let watchlist = [];
 /** @type {import("../shared/types").HistoryRecord[]} */
 let records = [];
 let enabled = true;
-let activeFilter = "all";
 let searchQuery = "";
-let currentPage = 1;
-let pageSize = 100;
-let totalRecords = 0;
-let loadedAll = false;
 /** @type {{ total: number; today: number; sites: number; enabled: boolean; domainCounts: Record<string, number>; topDomain: string|null; topDomainCount: number; }|null} */
 let stats = null;
 /** @type {Set<string>} */
@@ -25,6 +20,20 @@ let worksTotal = 0;
 let worksSort = "score";
 let worksSite = "all";
 const worksPageSize = 50;
+
+// 未归属访问 + 适配器健康度
+/** @type {{ unattributedCount: number, adapters: Array<{domain:string,matched:number,dropped:number,suspect:boolean}> }|null} */
+let health = null;
+let worksView = "works";
+/** @type {Array<Object>} */
+let unattributed = [];
+let unattributedPage = 1;
+let unattributedTotal = 0;
+let unattributedQuery = "";
+
+// 作品详情状态：{ work, sources, visits }；null 表示正在看作品列表
+/** @type {Object|null} */
+let currentWork = null;
 
 // --- 基础工具函数 ---
 /**
@@ -111,33 +120,16 @@ function renderWatchlist() {
     .join("");
 }
 
-function renderFilterBar() {
-  const bar = document.getElementById("filterBar");
-  const counts = (stats && stats.domainCounts) || {};
-  const domains = Object.keys(counts);
-  let html = `
-    <div class="filter-chip ${activeFilter === "all" ? "active" : ""}" data-domain="all">全部</div>
-    <div class="filter-chip ${activeFilter === "pinned" ? "active" : ""}" data-domain="pinned" style="border-color:var(--warning)">★ 已收藏</div>
-  `;
-  domains.forEach((d) => {
-    html += `<div class="filter-chip ${activeFilter === d ? "active" : ""}" data-domain="${d}">${d} <span style="opacity:0.5">${counts[d]}</span></div>`;
-  });
-  bar.innerHTML = html;
-}
-
 function renderRecords() {
   const container = document.getElementById("recordsContainer");
-  const loadMoreBtnContainer = document.getElementById("loadMoreContainer");
 
-  // 综合过滤 (搜索 + 筛选)
   let filtered = records;
   if (searchQuery) {
     filtered = filtered.filter((r) => window.sharedUtils.matchesSearch(r, searchQuery));
   }
 
   if (filtered.length === 0) {
-    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${searchQuery ? "未发现匹配记录" : "历史空空如也"}</div>`;
-    loadMoreBtnContainer.innerHTML = "";
+    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${searchQuery ? "未发现匹配的访问" : "这部作品暂无访问"}</div>`;
     return;
   }
 
@@ -151,23 +143,20 @@ function renderRecords() {
     }
     const color = getDomainColor(r.matchedRule);
     const isPinned = r.pinned ? true : false;
-    const favicon = r.favIconUrl
-      ? `<img class="rec-favicon" src="${escapeHtml(r.favIconUrl)}" onerror="this.style.display='none'" />`
+    const edition = r.edition
+      ? `<span class="badge">${escapeHtml(r.edition)}</span>`
       : "";
-    const desc = r.description
-      ? `<span class="item-url" style="max-width:240px; opacity:0.5">${escapeHtml(r.description.slice(0, 60))}</span>`
-      : `<span class="item-url">${escapeHtml(r.url)}</span>`;
-
     html += `
       <div class="data-item" data-url="${encodeURIComponent(r.url)}">
         <input type="checkbox" class="rec-checkbox" data-action="rec-select" data-id="${r.id}" ${selectedIds.has(r.id) ? "checked" : ""}>
-        ${favicon}
         <div class="item-body">
           <div class="item-title">${escapeHtml(r.title || r.url)}</div>
           <div class="item-meta">
-            <span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(r.matchedRule)}</span>
+            <span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(siteLabel(r.matchedRule))}</span>
+            ${edition}
             <span>${formatTime(r.timestamp)}</span>
-            ${desc}
+            <span>停留 ${formatDwell(r.dwellTime)}</span>
+            <span class="item-url">${escapeHtml(r.url)}</span>
           </div>
         </div>
         <div class="item-actions">
@@ -188,25 +177,80 @@ function renderRecords() {
     `;
   });
   container.innerHTML = html;
-
-  // 加载更多按钮
-  if (!loadedAll && !searchQuery) {
-    loadMoreBtnContainer.innerHTML = `<button id="btnLoadMore" class="btn btn-ghost">加载更多 (${records.length} / ${totalRecords})</button>`;
-    document.getElementById("btnLoadMore").onclick = () =>
-      loadRecords(currentPage + 1);
-  } else {
-    loadMoreBtnContainer.innerHTML = "";
-  }
 }
 
-async function loadRecords(page, filter) {
-  const f = filter !== undefined ? filter : activeFilter;
-  const result = await window.electronAPI.getRecordsPage(page, pageSize, f);
-  records = page === 1 ? result.records : records.concat(result.records);
-  currentPage = page;
-  totalRecords = result.total;
-  loadedAll = records.length >= totalRecords;
+function formatDwell(ms) {
+  if (!ms) return "—";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + "秒";
+  const m = Math.floor(s / 60);
+  return s % 60 ? `${m}分${s % 60}秒` : `${m}分`;
+}
+
+// 每个 (站点, 版本) 组合各占一行——同名版本在不同站点上必须分别显示。
+function renderWorkSources() {
+  const container = document.getElementById("workSources");
+  const sources = (currentWork && currentWork.sources) || [];
+  if (sources.length === 0) {
+    container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--muted-fg); font-size:12px">这部作品暂无来源</div>`;
+    return;
+  }
+  container.innerHTML = sources
+    .map((s) => {
+      const color = getDomainColor(s.matchedRule);
+      const edition = s.edition
+        ? `<span class="badge">${escapeHtml(s.edition)}</span>`
+        : `<span class="badge" style="opacity:0.5">未标注版本</span>`;
+      return `
+      <div class="data-item" data-open-url="${encodeURIComponent(s.lastUrl || "")}">
+        <div class="item-body">
+          <div class="item-title">
+            <span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(siteLabel(s.matchedRule))}</span>
+            ${edition}
+          </div>
+          <div class="item-meta">
+            <span>${s.visitCount} 次访问</span>
+            <span>${s.lastVisitAt ? formatTime(s.lastVisitAt) : ""}</span>
+            <span class="item-url">${escapeHtml(s.lastUrl || "")}</span>
+          </div>
+        </div>
+        <div class="item-actions"><button class="btn-pin-text">打开</button></div>
+      </div>`;
+    })
+    .join("");
+}
+
+// 访问列表收进作品详情：打开一部作品，来源与全部访问都在这里。
+async function openWorkDetail(workId) {
+  const detail = await window.electronAPI.getWorkDetail(workId);
+  if (!detail) return;
+  // 同一次打开（广播后刷新）不重置搜索，否则用户正在输入的过滤会被清掉。
+  const sameWork = currentWork && currentWork.work.id === workId;
+  currentWork = detail;
+  records = detail.visits || [];
+  if (!sameWork) {
+    searchQuery = "";
+    selectedIds.clear();
+    const search = document.getElementById("searchInput");
+    if (search) search.value = "";
+  }
+  document.getElementById("workDetailTitle").textContent =
+    detail.work.title || "未命名作品";
+  document.getElementById("workDetailMeta").innerHTML =
+    `<span class="badge">${detail.work.score || 0} 分</span>` +
+    `<span>${detail.sources.length} 个来源</span>` +
+    `<span>${records.length} 次访问</span>`;
+  const latest = document.getElementById("btnOpenLatest");
+  const hasVisits = records.length > 0;
+  latest.style.display = hasVisits ? "" : "none";
+  latest.onclick = hasVisits
+    ? () => window.electronAPI.openUrl(records[0].url)
+    : null;
+  renderWorkSources();
   renderRecords();
+  updateBatchDeleteBtn();
+  document.getElementById("worksListView").style.display = "none";
+  document.getElementById("workDetailView").style.display = "block";
 }
 
 async function refreshStats() {
@@ -288,6 +332,143 @@ async function loadWorks(page) {
   renderWorks();
 }
 
+// --- 未归类访问 + 适配器健康度 ---
+function renderUnattributedGroup() {
+  const el = document.getElementById("worksHealth");
+  const count = health ? health.unattributedCount : null;
+  el.innerHTML = `
+    <div class="data-list" style="margin-bottom:16px">
+      <div class="data-item" data-action="show-unattributed">
+        <div class="item-body">
+          <div class="item-title">未归类</div>
+          <div class="item-meta">认不出作品的访问；一条都不丢，只是还没归到作品</div>
+        </div>
+        <div class="item-actions">
+          <span class="badge">${count === null ? "…" : count} 条</span>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderAdapterHealth() {
+  const el = document.getElementById("adapterHealth");
+  const summary = document.getElementById("adapterHealthSummary");
+  if (!el) return;
+  const adapters = (health && health.adapters) || [];
+  if (summary) summary.textContent = adapters.length ? `${adapters.length} 个站点` : "";
+  if (adapters.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted-fg); font-size:12px">暂无适配器数据；收到访问后这里会按站点累计命中与丢弃。</div>`;
+    return;
+  }
+  el.innerHTML = adapters
+    .map(
+      (a) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--border)">
+      <div style="display:flex; align-items:center; gap:8px; min-width:0">
+        <span style="font-family:var(--font-mono); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(a.domain)}</span>
+        ${a.suspect ? '<span class="badge" style="border-color:var(--warning); color:var(--warning)">疑似失效</span>' : ""}
+      </div>
+      <span style="font-family:var(--font-mono); font-size:11px; color:var(--muted-fg); white-space:nowrap">命中 ${a.matched} / 丢弃 ${a.dropped}</span>
+    </div>`,
+    )
+    .join("");
+}
+
+async function loadHealth() {
+  health = await window.electronAPI.getWorkHealth();
+  renderUnattributedGroup();
+  renderAdapterHealth();
+}
+
+function renderUnattributed() {
+  const container = document.getElementById("unattributedContainer");
+  const more = document.getElementById("unattributedLoadMoreContainer");
+
+  if (unattributed.length === 0) {
+    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${
+      unattributedQuery ? "未发现匹配的未归类访问" : "没有未归类的访问"
+    }</div>`;
+    more.innerHTML = "";
+    return;
+  }
+
+  let html = "";
+  let currentGroup = "";
+  for (const r of unattributed) {
+    const dateLabel = dateGroupLabel(r.timestamp);
+    if (dateLabel !== currentGroup) {
+      currentGroup = dateLabel;
+      html += `<div class="date-group-header">${dateLabel}</div>`;
+    }
+    const color = getDomainColor(r.matchedRule);
+    html += `
+      <div class="data-item" data-url="${encodeURIComponent(r.url)}">
+        <div class="item-body">
+          <div class="item-title">${escapeHtml(r.title || r.url)}</div>
+          <div class="item-meta">
+            <span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(siteLabel(r.matchedRule))}</span>
+            <span>${formatTime(r.timestamp)}</span>
+            <span class="item-url">${escapeHtml(r.url)}</span>
+          </div>
+        </div>
+      </div>`;
+  }
+  container.innerHTML = html;
+
+  if (unattributed.length < unattributedTotal) {
+    more.innerHTML = `<button id="btnUnattributedLoadMore" class="btn btn-ghost">加载更多 (${unattributed.length} / ${unattributedTotal})</button>`;
+    document.getElementById("btnUnattributedLoadMore").onclick = () =>
+      loadUnattributed(unattributedPage + 1);
+  } else {
+    more.innerHTML = "";
+  }
+}
+
+async function loadUnattributed(page) {
+  const result = await window.electronAPI.getUnattributedPage(
+    page,
+    worksPageSize,
+    unattributedQuery,
+  );
+  unattributed = page === 1 ? result.records : unattributed.concat(result.records);
+  unattributedPage = page;
+  unattributedTotal = result.total;
+  renderUnattributed();
+}
+
+function showWorksView(view) {
+  worksView = view;
+  const onWorks = view === "works";
+  document.getElementById("worksListView").style.display = onWorks ? "" : "none";
+  document.getElementById("workDetailView").style.display = "none";
+  document.getElementById("unattributedPanel").style.display = onWorks
+    ? "none"
+    : "block";
+  if (!onWorks) loadUnattributed(1);
+}
+// 点开一部作品：它的来源与全部访问都在详情里。
+document.getElementById("worksContainer").onclick = function (e) {
+  const row = e.target.closest("[data-work-id]");
+  if (row) openWorkDetail(row.dataset.workId);
+};
+
+// 来源行：点击打开该来源的最近地址。
+document.getElementById("workSources").onclick = function (e) {
+  const row = e.target.closest("[data-open-url]");
+  if (row && row.dataset.openUrl) {
+    window.electronAPI.openUrl(decodeURIComponent(row.dataset.openUrl));
+  }
+};
+
+document.getElementById("btnBackToWorks").onclick = function () {
+  currentWork = null;
+  records = [];
+  searchQuery = "";
+  selectedIds.clear();
+  document.getElementById("worksListView").style.display = "";
+  document.getElementById("workDetailView").style.display = "none";
+};
+
 // --- 历史回填（issue #6）：把已有访问归入作品，进度与前后计数都摆在界面上 ---
 let backfillRunning = false;
 
@@ -296,18 +477,11 @@ function setBackfillStatus(text) {
   if (el) el.textContent = text;
 }
 
-async function refreshBackfillStatus() {
-  if (backfillRunning) return null;
-  const n = await window.electronAPI.getUnassignedCount();
-  setBackfillStatus(`未归属访问 ${n} 条`);
-  return n;
-}
-
 document.getElementById("btnWorksBackfill").onclick = async function () {
   if (backfillRunning) return;
   backfillRunning = true;
   this.disabled = true;
-  const before = await window.electronAPI.getUnassignedCount();
+  const before = health ? health.unattributedCount : 0;
   setBackfillStatus(`回填中… 0 / ${before}`);
   try {
     const r = await window.electronAPI.backfillWorks();
@@ -317,6 +491,7 @@ document.getElementById("btnWorksBackfill").onclick = async function () {
     if (r.ambiguous > 0) text += `；${r.ambiguous} 条身份键有冲突`;
     setBackfillStatus(text);
     await refreshStats();
+    await loadHealth();
     renderWorksSiteBar();
     await loadWorks(1);
   } catch (e) {
@@ -396,21 +571,13 @@ function updateBatchDeleteBtn() {
 }
 
 document.getElementById("btnBatchDelete").onclick = async function () {
-  if (confirm(`确定删除选中的 ${selectedIds.size} 条记录？`)) {
+  if (confirm(`确定删除选中的 ${selectedIds.size} 条访问？`)) {
     await window.electronAPI.deleteRecords(Array.from(selectedIds));
     selectedIds.clear();
     updateBatchDeleteBtn();
-    loadRecords(1);
     refreshStats();
-  }
-};
-
-document.getElementById("filterBar").onclick = async function (e) {
-  const chip = e.target.closest(".filter-chip");
-  if (chip) {
-    activeFilter = chip.dataset.domain;
-    renderFilterBar();
-    loadRecords(1);
+    loadWorks(1);
+    if (currentWork) openWorkDetail(currentWork.work.id);
   }
 };
 
@@ -430,6 +597,26 @@ document.getElementById("worksSiteBar").onclick = function (e) {
   worksSite = chip.dataset.site;
   renderWorksSiteBar();
   loadWorks(1);
+};
+
+document.getElementById("worksHealth").onclick = function (e) {
+  if (e.target.closest("[data-action='show-unattributed']")) {
+    showWorksView("unattributed");
+  }
+};
+
+document.getElementById("btnUnattributedBack").onclick = function () {
+  showWorksView("works");
+};
+
+document.getElementById("unattributedSearchInput").oninput = function () {
+  unattributedQuery = this.value.trim();
+  loadUnattributed(1);
+};
+
+document.getElementById("unattributedContainer").onclick = function (e) {
+  const item = e.target.closest(".data-item");
+  if (item) window.electronAPI.openUrl(decodeURIComponent(item.dataset.url));
 };
 
 document.getElementById("searchInput").oninput = function () {
@@ -517,13 +704,11 @@ async function init() {
   setWsStatus(false);
   watchlist = await window.electronAPI.getWatchlist();
   await refreshStats();
+  await loadHealth();
   document.getElementById("enabledToggle").checked = enabled;
   renderWatchlist();
-  renderFilterBar();
   renderWorksSiteBar();
-  loadRecords(1);
   loadWorks(1);
-  await refreshBackfillStatus();
   setWsStatus(true);
 
   const aiCfg = await window.electronAPI.getAiConfig();
@@ -536,19 +721,31 @@ async function init() {
 
 window.electronAPI.onUpdate((data) => {
   if (data.type === "recordAdded" || data.type === "recordUpdated") {
-    // 简单起见，收到更新就刷新统计和第一页
+    // 简单起见，收到更新就刷新统计和第一页；打开中的作品详情也一并刷新
     refreshStats().then(() => {
-      renderFilterBar();
       renderWorksSiteBar();
     });
-    loadRecords(1);
     loadWorks(1);
+    loadHealth();
+    if (worksView === "unattributed") loadUnattributed(1);
+    if (currentWork) openWorkDetail(currentWork.work.id);
   } else if (data.type === "recordsCleared") {
-    records = [];
-    renderRecords();
-    works = [];
-    renderWorks();
+    // deleteRecords() 也会发这个事件（部分删除），所以不能一律清空：
+    // 打开中的作品要重新读取，否则详情会留着旧表头与空列表。
+    loadWorks(1);
     refreshStats();
+    loadHealth();
+    if (worksView === "unattributed") loadUnattributed(1);
+    if (currentWork) {
+      openWorkDetail(currentWork.work.id);
+    } else {
+      records = [];
+      renderRecords();
+    }
+  } else if (data.type === "adapterHealthUpdated") {
+    // 丢弃/去重不产生 recordAdded，健康度由主进程主动推。
+    if (health) health.adapters = data.adapters || [];
+    renderAdapterHealth();
   } else if (data.type === "worksBackfilledProgress") {
     setBackfillStatus(`回填中… ${data.processed} / ${data.before}`);
   } else if (data.type === "agentPendingUpdated") {
@@ -790,7 +987,7 @@ document.getElementById("recommendationsContainer").onclick = async function (
     if (item) item.style.opacity = "0.3";
     showToast("已录入追踪库");
     refreshStats();
-    loadRecords(1);
+    loadWorks(1);
   }
   if (rejectBtn) {
     e.stopPropagation();
@@ -826,7 +1023,7 @@ document.getElementById("btnAgentPending").onclick = async function () {
   }
   loadPendingActions();
   refreshStats();
-  loadRecords(1);
+  loadWorks(1);
 };
 
 init();

@@ -4,7 +4,7 @@
 const { shell } = require("electron");
 
 function createIPCDispatcher(ipcMain, store, deps = {}) {
-  const { providers, executeTool } = deps;
+  const { providers, executeTool, getAdapterHealth } = deps;
   const readStore = store.getAgentReadStore();
 
   ipcMain.handle("records:page", (_, page, pageSize, filter) =>
@@ -15,7 +15,17 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     store.getWorksPage(page, pageSize, options),
   );
 
-  ipcMain.handle("works:unassigned-count", () => store.countUnassignedRecords());
+  ipcMain.handle("works:detail", (_, workId) => store.getWorkDetail(workId));
+
+  ipcMain.handle("works:unattributed", (_, page, pageSize, search) =>
+    store.getUnattributedPage(page, pageSize, search),
+  );
+
+  // 归属健康度：未归属访问数 + 每站点适配器命中情况。
+  ipcMain.handle("works:health", () => ({
+    unattributedCount: store.getUnattributedCount(),
+    adapters: getAdapterHealth(),
+  }));
 
   ipcMain.handle("works:backfill", () => store.backfillWorks());
 
