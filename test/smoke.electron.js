@@ -12,6 +12,8 @@ const { app, BrowserWindow } = require("electron");
 const { loadPreloadRoutes } = require("./preload-routes");
 
 const SEED_TITLE = "SMOKE 预置记录 α";
+const SEED_WORK_TITLE = "SMOKE 预置作品 β";
+const SEED_WORK_SITE = "B站";
 const TIMEOUT_MS = 60000;
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-smoke-"));
@@ -25,6 +27,12 @@ async function seedDatabase() {
   const { RecordStore } = require("../agent/record-store");
   const store = new RecordStore(dbPath);
   await store.init();
+  // 预置一部作品，并把预置访问挂到它上面——冒烟要断言作品主视图。
+  const visit = store.recordWorkVisit({
+    keys: [{ kind: "code", value: "SMOKE-CODE-1", confidence: "high" }],
+    title: SEED_WORK_TITLE,
+    timestamp: Date.now(),
+  });
   store.insertRecord({
     id: "smoke-1",
     url: "https://bilibili.com/video/smoke",
@@ -33,6 +41,7 @@ async function seedDatabase() {
     matchedRule: "bilibili.com",
     tabId: 1,
     timestamp: Date.now(),
+    workId: visit.work.id,
   });
   fs.writeFileSync(dbPath, Buffer.from(store.export()));
 }
@@ -71,6 +80,7 @@ function pageProbe(invokeRoutes) {
       unregistered: [],
       watchlistText: "",
       recordsText: "",
+      worksText: "",
     };
     if (!out.hasAPI) return out;
 
@@ -81,8 +91,12 @@ function pageProbe(invokeRoutes) {
     // Wait for the renderer's async init() to finish painting data.
     const deadline = Date.now() + 10000;
     const rendered = () => {
-      const el = document.getElementById("recordsContainer");
-      return el && el.textContent.includes(${JSON.stringify(SEED_TITLE)});
+      const rec = document.getElementById("recordsContainer");
+      const wrk = document.getElementById("worksContainer");
+      return (
+        rec && rec.textContent.includes(${JSON.stringify(SEED_TITLE)}) &&
+        wrk && wrk.textContent.includes(${JSON.stringify(SEED_WORK_TITLE)})
+      );
     };
     while (!rendered() && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
@@ -90,8 +104,10 @@ function pageProbe(invokeRoutes) {
 
     const wl = document.getElementById("watchlist");
     const rc = document.getElementById("recordsContainer");
+    const wk = document.getElementById("worksContainer");
     out.watchlistText = wl ? wl.textContent : "";
     out.recordsText = rc ? rc.textContent : "";
+    out.worksText = wk ? wk.textContent : "";
 
     // Round-trip every route. A missing handler rejects with distinctive text;
     // channels that need arguments may reject with a handler-level error, which
@@ -164,6 +180,18 @@ async function main() {
   expect(
     probe.recordsText.includes(SEED_TITLE),
     "renderer did not render the seeded record",
+  );
+  expect(
+    probe.worksText.includes(SEED_WORK_TITLE),
+    "renderer did not render the seeded work",
+  );
+  expect(
+    probe.worksText.includes("1 分"),
+    "renderer did not render the work's score",
+  );
+  expect(
+    probe.worksText.includes(SEED_WORK_SITE),
+    "renderer did not render the work's site",
   );
   expect(
     consoleErrors.length === 0,
