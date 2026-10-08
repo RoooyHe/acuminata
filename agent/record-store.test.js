@@ -444,6 +444,37 @@ async function runTests() {
     assert(byLabel.works[0].id === other.work.id, "标签筛选命中该站的作品");
   }
 
+  // ── 未归属访问：降级路径的可见化 ──
+  console.log("\nTest: Works — 未归属访问");
+  {
+    const s = await initStore();
+    const t = Date.now();
+    const w = s.recordWorkVisit({
+      keys: [{ kind: "code", value: "OWNED-1", confidence: "high" }],
+      title: "已归属作品",
+      timestamp: t,
+    });
+    s.insertRecord({ id: "att-1", url: "https://bilibili.com/v/a", title: "已归属作品", domain: "bilibili.com", matchedRule: "bilibili.com", tabId: 1, timestamp: t, workId: w.work.id });
+    s.insertRecord({ id: "un-1", url: "https://bilibili.com/v/b", title: "认不出的甲", domain: "bilibili.com", matchedRule: "bilibili.com", tabId: 1, timestamp: t + 1, workId: null });
+    s.insertRecord({ id: "un-2", url: "https://example.com/v/c", title: "认不出的乙", domain: "example.com", matchedRule: "example.com", tabId: 2, timestamp: t + 2, workId: null });
+
+    assert(s.getUnattributedCount() === 2, "未归属计数为 2");
+    const all = s.getUnattributedPage(1, 10);
+    assert(all.total === 2 && all.records.length === 2, "未归属列表拿到 2 条");
+    assert(all.records[0].id === "un-2", "按时间倒序：最新的未归属在前");
+    assert(all.records.every((r) => r.workId === null), "列表里没有已归属的记录");
+
+    const found = s.getUnattributedPage(1, 10, "认不出的甲");
+    assert(found.total === 1 && found.records[0].id === "un-1", "按标题搜索未归属访问");
+    const byUrl = s.getUnattributedPage(1, 10, "example.com/v/c");
+    assert(byUrl.total === 1 && byUrl.records[0].id === "un-2", "按 URL 搜索未归属访问");
+    const missing = s.getUnattributedPage(1, 10, "不存在的词");
+    assert(missing.total === 0 && missing.records.length === 0, "搜不到时返回空，不是错误");
+
+    const paged = s.getUnattributedPage(2, 1, "");
+    assert(paged.records.length === 1 && paged.total === 2, "未归属列表分页只读一页");
+  }
+
   // ── 作品详情：来源（站点 + 版本）+ 访问 ──
   console.log("\nTest: 作品详情 — 来源与访问");
   {

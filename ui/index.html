@@ -595,6 +595,7 @@
                             </div>
                         </div>
                     </div>
+                    <div id="worksHealth"></div>
                     <div class="filter-bar" id="worksSiteBar"></div>
                     <div class="data-list" id="worksContainer"></div>
                     <div
@@ -655,6 +656,44 @@
                     </div>
                     <div class="data-list" id="recordsContainer"></div>
                 </div>
+                <div id="unattributedPanel" style="display: none">
+                    <div
+                        style="
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            margin-bottom: 24px;
+                        "
+                    >
+                        <div>
+                            <h2 style="margin-bottom: 4px">未归类访问</h2>
+                            <div
+                                style="
+                                    color: var(--muted-fg);
+                                    font-size: 12px;
+                                "
+                            >
+                                认不出作品的访问。它们不会被丢弃，只是还没归到作品。
+                            </div>
+                        </div>
+                        <button class="btn btn-ghost" id="btnUnattributedBack">
+                            ← 返回作品
+                        </button>
+                    </div>
+                    <div class="toolbar">
+                        <input
+                            type="text"
+                            class="search-input"
+                            id="unattributedSearchInput"
+                            placeholder="搜索未归类访问的标题、URL 或站点..."
+                        />
+                    </div>
+                    <div class="data-list" id="unattributedContainer"></div>
+                    <div
+                        id="unattributedLoadMoreContainer"
+                        style="padding: 20px; text-align: center"
+                    ></div>
+                </div>
             </div>
 
             <div id="overview" class="tab-panel">
@@ -682,6 +721,19 @@
                             -
                         </div>
                     </div>
+                </div>
+                <div class="card">
+                    <div class="metric-title">
+                        适配器命中情况
+                        <span
+                            style="
+                                font-family: var(--font-mono);
+                                font-size: 11px;
+                            "
+                            id="adapterHealthSummary"
+                        ></span>
+                    </div>
+                    <div id="adapterHealth" style="margin-top: 12px"></div>
                 </div>
             </div>
 

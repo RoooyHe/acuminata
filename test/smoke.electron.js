@@ -13,6 +13,7 @@ const { loadPreloadRoutes } = require("./preload-routes");
 
 const SEED_TITLE = "SMOKE 预置访问 α";
 const SEED_WORK_TITLE = "SMOKE 预置作品 β";
+const SEED_UNATTR_TITLE = "SMOKE 未归类 γ";
 const SEED_VISIT_URL_A = "https://bilibili.com/video/smoke";
 const SEED_VISIT_URL_B = "https://tvmao.com/kanju/smoke";
 const SEED_EDITION = "中文字幕";
@@ -61,6 +62,17 @@ async function seedDatabase() {
     edition: SEED_EDITION,
     workId: visit.work.id,
   });
+  // 一条认不出作品的访问：降级路径，必须仍然可见可浏览。
+  store.insertRecord({
+    id: "smoke-unattributed-1",
+    url: "https://bilibili.com/video/orphan",
+    title: SEED_UNATTR_TITLE,
+    domain: "bilibili.com",
+    matchedRule: "bilibili.com",
+    tabId: 2,
+    timestamp: Date.now(),
+    workId: null,
+  });
   fs.writeFileSync(dbPath, Buffer.from(store.export()));
 }
 
@@ -98,6 +110,8 @@ function pageProbe(invokeRoutes) {
       unregistered: [],
       watchlistText: "",
       worksText: "",
+      worksHealthText: "",
+      unattributedText: "",
       sourcesText: "",
       visitsText: "",
       detailVisible: false,
@@ -119,6 +133,24 @@ function pageProbe(invokeRoutes) {
     };
     while (!worksRendered() && Date.now() < deadline) await sleep(50);
     out.worksText = (document.getElementById("worksContainer") || {}).textContent || "";
+
+    // 「未归类」是一个可浏览的分组：点开它，未归属的访问要列出来。
+    out.worksHealthText = (document.getElementById("worksHealth") || {}).textContent || "";
+    const group = document.querySelector("#worksHealth [data-action='show-unattributed']");
+    if (group) group.click();
+    const unattRendered = () => {
+      const u = document.getElementById("unattributedContainer");
+      return !!u && u.textContent.includes(${JSON.stringify(SEED_UNATTR_TITLE)});
+    };
+    while (!unattRendered() && Date.now() < deadline) await sleep(50);
+    out.unattributedText = (document.getElementById("unattributedContainer") || {}).textContent || "";
+    // 回到作品列表，再看作品详情。
+    const backToList = document.getElementById("btnUnattributedBack");
+    if (backToList) backToList.click();
+    while (
+      document.getElementById("worksListView").style.display === "none" &&
+      Date.now() < deadline
+    ) await sleep(50);
 
     // 点开作品：它的来源（站点 + 版本）与访问都在详情里。
     const row = document.querySelector("#worksContainer [data-work-id]");
@@ -250,6 +282,18 @@ async function main() {
   expect(
     probe.hasOpenLatest,
     "work detail did not offer opening the latest visit",
+  );
+  expect(
+    probe.worksHealthText.includes("未归类"),
+    "renderer did not render the 未归类 group",
+  );
+  expect(
+    probe.worksHealthText.includes("1 条"),
+    "renderer did not render the unattributed count",
+  );
+  expect(
+    probe.unattributedText.includes(SEED_UNATTR_TITLE),
+    "未归类 group did not list the unattributed visit",
   );
   expect(
     consoleErrors.length === 0,

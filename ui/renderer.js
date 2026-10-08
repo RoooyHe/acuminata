@@ -21,6 +21,16 @@ let worksSort = "score";
 let worksSite = "all";
 const worksPageSize = 50;
 
+// 未归属访问 + 适配器健康度
+/** @type {{ unattributedCount: number, adapters: Array<{domain:string,matched:number,dropped:number,suspect:boolean}> }|null} */
+let health = null;
+let worksView = "works";
+/** @type {Array<Object>} */
+let unattributed = [];
+let unattributedPage = 1;
+let unattributedTotal = 0;
+let unattributedQuery = "";
+
 // 作品详情状态：{ work, sources, visits }；null 表示正在看作品列表
 /** @type {Object|null} */
 let currentWork = null;
@@ -322,6 +332,120 @@ async function loadWorks(page) {
   renderWorks();
 }
 
+// --- 未归类访问 + 适配器健康度 ---
+function renderUnattributedGroup() {
+  const el = document.getElementById("worksHealth");
+  const count = health ? health.unattributedCount : null;
+  el.innerHTML = `
+    <div class="data-list" style="margin-bottom:16px">
+      <div class="data-item" data-action="show-unattributed">
+        <div class="item-body">
+          <div class="item-title">未归类</div>
+          <div class="item-meta">认不出作品的访问；一条都不丢，只是还没归到作品</div>
+        </div>
+        <div class="item-actions">
+          <span class="badge">${count === null ? "…" : count} 条</span>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderAdapterHealth() {
+  const el = document.getElementById("adapterHealth");
+  const summary = document.getElementById("adapterHealthSummary");
+  if (!el) return;
+  const adapters = (health && health.adapters) || [];
+  if (summary) summary.textContent = adapters.length ? `${adapters.length} 个站点` : "";
+  if (adapters.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted-fg); font-size:12px">暂无适配器数据；收到访问后这里会按站点累计命中与丢弃。</div>`;
+    return;
+  }
+  el.innerHTML = adapters
+    .map(
+      (a) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--border)">
+      <div style="display:flex; align-items:center; gap:8px; min-width:0">
+        <span style="font-family:var(--font-mono); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(a.domain)}</span>
+        ${a.suspect ? '<span class="badge" style="border-color:var(--warning); color:var(--warning)">疑似失效</span>' : ""}
+      </div>
+      <span style="font-family:var(--font-mono); font-size:11px; color:var(--muted-fg); white-space:nowrap">命中 ${a.matched} / 丢弃 ${a.dropped}</span>
+    </div>`,
+    )
+    .join("");
+}
+
+async function loadHealth() {
+  health = await window.electronAPI.getWorkHealth();
+  renderUnattributedGroup();
+  renderAdapterHealth();
+}
+
+function renderUnattributed() {
+  const container = document.getElementById("unattributedContainer");
+  const more = document.getElementById("unattributedLoadMoreContainer");
+
+  if (unattributed.length === 0) {
+    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${
+      unattributedQuery ? "未发现匹配的未归类访问" : "没有未归类的访问"
+    }</div>`;
+    more.innerHTML = "";
+    return;
+  }
+
+  let html = "";
+  let currentGroup = "";
+  for (const r of unattributed) {
+    const dateLabel = dateGroupLabel(r.timestamp);
+    if (dateLabel !== currentGroup) {
+      currentGroup = dateLabel;
+      html += `<div class="date-group-header">${dateLabel}</div>`;
+    }
+    const color = getDomainColor(r.matchedRule);
+    html += `
+      <div class="data-item" data-url="${encodeURIComponent(r.url)}">
+        <div class="item-body">
+          <div class="item-title">${escapeHtml(r.title || r.url)}</div>
+          <div class="item-meta">
+            <span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(siteLabel(r.matchedRule))}</span>
+            <span>${formatTime(r.timestamp)}</span>
+            <span class="item-url">${escapeHtml(r.url)}</span>
+          </div>
+        </div>
+      </div>`;
+  }
+  container.innerHTML = html;
+
+  if (unattributed.length < unattributedTotal) {
+    more.innerHTML = `<button id="btnUnattributedLoadMore" class="btn btn-ghost">加载更多 (${unattributed.length} / ${unattributedTotal})</button>`;
+    document.getElementById("btnUnattributedLoadMore").onclick = () =>
+      loadUnattributed(unattributedPage + 1);
+  } else {
+    more.innerHTML = "";
+  }
+}
+
+async function loadUnattributed(page) {
+  const result = await window.electronAPI.getUnattributedPage(
+    page,
+    worksPageSize,
+    unattributedQuery,
+  );
+  unattributed = page === 1 ? result.records : unattributed.concat(result.records);
+  unattributedPage = page;
+  unattributedTotal = result.total;
+  renderUnattributed();
+}
+
+function showWorksView(view) {
+  worksView = view;
+  const onWorks = view === "works";
+  document.getElementById("worksListView").style.display = onWorks ? "" : "none";
+  document.getElementById("workDetailView").style.display = "none";
+  document.getElementById("unattributedPanel").style.display = onWorks
+    ? "none"
+    : "block";
+  if (!onWorks) loadUnattributed(1);
+}
 // 点开一部作品：它的来源与全部访问都在详情里。
 document.getElementById("worksContainer").onclick = function (e) {
   const row = e.target.closest("[data-work-id]");
@@ -442,6 +566,26 @@ document.getElementById("worksSiteBar").onclick = function (e) {
   loadWorks(1);
 };
 
+document.getElementById("worksHealth").onclick = function (e) {
+  if (e.target.closest("[data-action='show-unattributed']")) {
+    showWorksView("unattributed");
+  }
+};
+
+document.getElementById("btnUnattributedBack").onclick = function () {
+  showWorksView("works");
+};
+
+document.getElementById("unattributedSearchInput").oninput = function () {
+  unattributedQuery = this.value.trim();
+  loadUnattributed(1);
+};
+
+document.getElementById("unattributedContainer").onclick = function (e) {
+  const item = e.target.closest(".data-item");
+  if (item) window.electronAPI.openUrl(decodeURIComponent(item.dataset.url));
+};
+
 document.getElementById("searchInput").oninput = function () {
   searchQuery = this.value.trim();
   renderRecords();
@@ -527,6 +671,7 @@ async function init() {
   setWsStatus(false);
   watchlist = await window.electronAPI.getWatchlist();
   await refreshStats();
+  await loadHealth();
   document.getElementById("enabledToggle").checked = enabled;
   renderWatchlist();
   renderWorksSiteBar();
@@ -548,18 +693,26 @@ window.electronAPI.onUpdate((data) => {
       renderWorksSiteBar();
     });
     loadWorks(1);
+    loadHealth();
+    if (worksView === "unattributed") loadUnattributed(1);
     if (currentWork) openWorkDetail(currentWork.work.id);
   } else if (data.type === "recordsCleared") {
     // deleteRecords() 也会发这个事件（部分删除），所以不能一律清空：
     // 打开中的作品要重新读取，否则详情会留着旧表头与空列表。
     loadWorks(1);
     refreshStats();
+    loadHealth();
+    if (worksView === "unattributed") loadUnattributed(1);
     if (currentWork) {
       openWorkDetail(currentWork.work.id);
     } else {
       records = [];
       renderRecords();
     }
+  } else if (data.type === "adapterHealthUpdated") {
+    // 丢弃/去重不产生 recordAdded，健康度由主进程主动推。
+    if (health) health.adapters = data.adapters || [];
+    renderAdapterHealth();
   } else if (data.type === "agentPendingUpdated") {
     loadPendingActions();
   }
