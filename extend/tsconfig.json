@@ -7,9 +7,11 @@
     ".plasmo/index.d.ts",
     "./**/*.ts",
     "./**/*.tsx",
-    "../shared/**/*.ts"
+    "../shared/**/*.ts",
+    "../shared/**/*.js"
   ],
   "compilerOptions": {
+    "allowJs": true,
     "paths": {
       "~*": [
         "./*"

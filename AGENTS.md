@@ -20,7 +20,8 @@ Two separate `package.json` files — **root** (Electron) and **extend/** (Plasm
 # Desktop
 npm start          # launch Electron
 npm run dev        # launch with DevTools open
-npm test           # run agent/*.test.js (no Electron needed)
+npm test           # run agent/*.test.js + test/ipc-contract.test.js (no Electron needed)
+npm run test:smoke # Electron smoke test: hidden window, real preload + renderer, temp DB
 
 # Extension (cd extend/)
 npm run build      # production build → build/chrome-mv3-prod/
@@ -32,7 +33,7 @@ Load the Chrome extension from `extend/build/chrome-mv3-prod/`.
 
 ## Architecture
 
-**Electron app is the source of truth.** It runs a WebSocket server on port 8766 and stores data in SQLite (via `sql.js`). DB path: `app.getPath("userData")/tracker.db`. The DB auto-saves with 1s debounce, flushed on quit.
+**Electron app is the source of truth.** It runs a WebSocket server on port 8766 and stores data in SQLite (via `sql.js`). DB path: `app.getPath("userData")/tracker.db`, overridable with `ACUMINATA_DB_PATH` (used by `npm run test:smoke` to avoid the real DB). The DB auto-saves with 1s debounce, flushed on quit.
 
 ```
 Browser → extension (background.ts) → WS → Electron (main.js) → SQLite
@@ -66,7 +67,7 @@ The Electron `main.js` has a "directory clustering" feature — same-path URLs a
 
 ## IPC channels (renderer ↔ main)
 
-All channels are in `preload.js`. Key ones: `get-records-page` (paginated + filter), `get-statistics`, `toggle-record-pin`, `add-watchlist`/`remove-watchlist`, `trigger-agent-analysis`, `agent-approve-actions`/`agent-dismiss-actions`.
+`preload.js` holds the route table: each entry maps a public API `name` (e.g. `getRecordsPage`, `getStatistics`, `toggleRecordPin`, `addToWatchlist`/`removeFromWatchlist`, `triggerAgentAnalysis`, `agentApproveActions`/`agentDismissActions`) to an `域:动作` IPC `channel` registered by `agent/ipc-dispatcher.js`. `test/ipc-contract.test.js` asserts the two lists match in both directions.
 
 ## Design system
 
