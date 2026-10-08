@@ -96,6 +96,10 @@ Both `ui/index.html` and `extend/options.tsx` use matching CSS variable blocks. 
 
 Issues live in the repo's GitHub Issues, accessed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
+### Triage labels
+
+The five canonical triage roles map to the default label strings — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
 ### Domain docs
 
 Single-context. Read `CONTEXT.md` at the repo root, plus ADRs in `docs/adr/`. See `docs/agents/domain.md`.
