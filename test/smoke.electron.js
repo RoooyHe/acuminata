@@ -13,6 +13,7 @@ const { loadPreloadRoutes } = require("./preload-routes");
 
 const SEED_TITLE = "SMOKE 预置记录 α";
 const SEED_WORK_TITLE = "SMOKE 预置作品 β";
+const SEED_UNATTR_TITLE = "SMOKE 未归类 γ";
 const SEED_WORK_SITE = "B站";
 const TIMEOUT_MS = 60000;
 
@@ -42,6 +43,17 @@ async function seedDatabase() {
     tabId: 1,
     timestamp: Date.now(),
     workId: visit.work.id,
+  });
+  // 一条认不出作品的访问：降级路径，必须仍然可见可浏览。
+  store.insertRecord({
+    id: "smoke-unattributed-1",
+    url: "https://bilibili.com/video/orphan",
+    title: SEED_UNATTR_TITLE,
+    domain: "bilibili.com",
+    matchedRule: "bilibili.com",
+    tabId: 2,
+    timestamp: Date.now(),
+    workId: null,
   });
   fs.writeFileSync(dbPath, Buffer.from(store.export()));
 }
@@ -81,6 +93,8 @@ function pageProbe(invokeRoutes) {
       watchlistText: "",
       recordsText: "",
       worksText: "",
+      worksHealthText: "",
+      unattributedText: "",
     };
     if (!out.hasAPI) return out;
 
@@ -108,6 +122,22 @@ function pageProbe(invokeRoutes) {
     out.watchlistText = wl ? wl.textContent : "";
     out.recordsText = rc ? rc.textContent : "";
     out.worksText = wk ? wk.textContent : "";
+    const healthEl = document.getElementById("worksHealth");
+    out.worksHealthText = healthEl ? healthEl.textContent : "";
+
+    // 「未归类」是一个可浏览的分组：点开它，未归属的访问要列出来。
+    const group = document.querySelector("#worksHealth [data-action='show-unattributed']");
+    if (group) group.click();
+    const unattDeadline = Date.now() + 10000;
+    const unattRendered = () => {
+      const u = document.getElementById("unattributedContainer");
+      return u && u.textContent.includes(${JSON.stringify(SEED_UNATTR_TITLE)});
+    };
+    while (!unattRendered() && Date.now() < unattDeadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const unatt = document.getElementById("unattributedContainer");
+    out.unattributedText = unatt ? unatt.textContent : "";
 
     // Round-trip every route. A missing handler rejects with distinctive text;
     // channels that need arguments may reject with a handler-level error, which
@@ -192,6 +222,22 @@ async function main() {
   expect(
     probe.worksText.includes(SEED_WORK_SITE),
     "renderer did not render the work's site",
+  );
+  expect(
+    probe.worksHealthText.includes("未归类"),
+    "renderer did not render the 未归类 group",
+  );
+  expect(
+    probe.worksHealthText.includes("1 条"),
+    "renderer did not render the unattributed count",
+  );
+  expect(
+    probe.recordsText.includes(SEED_UNATTR_TITLE),
+    "unattributed visit was dropped from the history list",
+  );
+  expect(
+    probe.unattributedText.includes(SEED_UNATTR_TITLE),
+    "未归类 group did not list the unattributed visit",
   );
   expect(
     consoleErrors.length === 0,

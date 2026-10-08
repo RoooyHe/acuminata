@@ -15,6 +15,7 @@ const {
 const { agentLoop, executeApprovedActions } = require("./agent/executor");
 const { createAIProviders } = require("./agent/providers");
 const { evaluateIncoming } = require("./agent/cluster");
+const { createAdapterHealth } = require("./agent/adapter-health");
 
 const EXTENSION_PORT = 8766;
 // Explicit override only (used by the smoke test); otherwise the user's real DB.
@@ -138,6 +139,7 @@ async function init() {
   createIPCDispatcher(ipcMain, store, {
     providers: aiProviders,
     executeTool,
+    getAdapterHealth: () => adapterHealth.snapshot(),
   });
 
   // Extension server
@@ -193,31 +195,7 @@ function startExtensionServer() {
 // ── 适配器健康度 ──────────────────────────────────────────────────────────────
 // 区分「这一页不是作品页」（正常丢弃）与「适配器已失效」（会静默丢整段历史）。
 // 见 docs/adr/0003 的后果条：用户自己写适配器，改版是常态，静默失效是头号故障。
-const adapterStats = new Map(); // domain -> { matched, dropped }
-
-function noteAdapterResult(domain, matched) {
-  let s = adapterStats.get(domain);
-  if (!s) {
-    s = { matched: 0, dropped: 0 };
-    adapterStats.set(domain, s);
-  }
-  if (matched) s.matched++;
-  else s.dropped++;
-  if (!matched && s.matched === 0 && s.dropped === 20) {
-    console.warn(
-      `[Adapter] ${domain}: 已丢弃 ${s.dropped} 条且从未命中，适配器可能已失效（站点改版？）`,
-    );
-  }
-}
-
-function getAdapterHealth() {
-  return Array.from(adapterStats.entries()).map(([domain, s]) => ({
-    domain,
-    matched: s.matched,
-    dropped: s.dropped,
-    suspect: s.matched === 0 && s.dropped >= 20,
-  }));
-}
+const adapterHealth = createAdapterHealth();
 
 function handleExtensionMessage(ws, msg) {
   switch (msg.type) {
@@ -241,7 +219,16 @@ function handleExtensionMessage(ws, msg) {
       };
 
       const result = evaluateIncoming(msg, store.getWatchlist(), findExisting);
-      noteAdapterResult(msg.domain, result.action !== "drop");
+      const dropped = result.action === "drop";
+      adapterHealth.note(msg.domain, !dropped);
+      // 丢弃/去重都不产生 recordAdded 广播。健康度得自己推一次，
+      // 否则「连续丢弃且从未命中」的站点要等下一次无关更新才看得见。
+      if (dropped || result.action === "ignore") {
+        broadcastToExtensions({
+          type: "adapterHealthUpdated",
+          adapters: adapterHealth.snapshot(),
+        });
+      }
 
       if (result.action === "drop" || result.action === "ignore") return;
 
