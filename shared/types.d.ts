@@ -20,6 +20,7 @@ export interface HistoryRecord {
   description?: string
   ogImage?: string
   dwellTime?: number
+  edition?: string
   createdAt?: number
   updatedAt?: number
 }

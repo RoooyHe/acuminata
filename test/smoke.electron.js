@@ -11,9 +11,12 @@ const path = require("path");
 const { app, BrowserWindow } = require("electron");
 const { loadPreloadRoutes } = require("./preload-routes");
 
-const SEED_TITLE = "SMOKE 预置记录 α";
+const SEED_TITLE = "SMOKE 预置访问 α";
 const SEED_WORK_TITLE = "SMOKE 预置作品 β";
-const SEED_WORK_SITE = "B站";
+const SEED_VISIT_URL_A = "https://bilibili.com/video/smoke";
+const SEED_VISIT_URL_B = "https://tvmao.com/kanju/smoke";
+const SEED_EDITION = "中文字幕";
+const SEED_DWELL_TEXT = "2分5秒";
 const TIMEOUT_MS = 60000;
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-smoke-"));
@@ -27,20 +30,35 @@ async function seedDatabase() {
   const { RecordStore } = require("../agent/record-store");
   const store = new RecordStore(dbPath);
   await store.init();
-  // 预置一部作品，并把预置访问挂到它上面——冒烟要断言作品主视图。
+  store.addWatchlist({ domain: "tvmao.com", label: "电视猫", color: "#fff" });
+  const ts = Date.now();
+  // 预置一部作品，两个站点上是**同名版本**：详情必须分别显示各自的站点。
   const visit = store.recordWorkVisit({
     keys: [{ kind: "code", value: "SMOKE-CODE-1", confidence: "high" }],
     title: SEED_WORK_TITLE,
-    timestamp: Date.now(),
+    timestamp: ts,
   });
   store.insertRecord({
     id: "smoke-1",
-    url: "https://bilibili.com/video/smoke",
+    url: SEED_VISIT_URL_A,
     title: SEED_TITLE,
     domain: "bilibili.com",
     matchedRule: "bilibili.com",
     tabId: 1,
-    timestamp: Date.now(),
+    timestamp: ts,
+    dwellTime: 125000,
+    edition: SEED_EDITION,
+    workId: visit.work.id,
+  });
+  store.insertRecord({
+    id: "smoke-2",
+    url: SEED_VISIT_URL_B,
+    title: SEED_TITLE + " · 电视猫",
+    domain: "tvmao.com",
+    matchedRule: "tvmao.com",
+    tabId: 2,
+    timestamp: ts - 60000,
+    edition: SEED_EDITION,
     workId: visit.work.id,
   });
   fs.writeFileSync(dbPath, Buffer.from(store.export()));
@@ -79,8 +97,11 @@ function pageProbe(invokeRoutes) {
       missingRoutes: [],
       unregistered: [],
       watchlistText: "",
-      recordsText: "",
       worksText: "",
+      sourcesText: "",
+      visitsText: "",
+      detailVisible: false,
+      hasOpenLatest: false,
     };
     if (!out.hasAPI) return out;
 
@@ -88,26 +109,40 @@ function pageProbe(invokeRoutes) {
       if (typeof api[r.name] !== "function") out.missingRoutes.push(r.name);
     }
 
-    // Wait for the renderer's async init() to finish painting data.
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const deadline = Date.now() + 10000;
-    const rendered = () => {
-      const rec = document.getElementById("recordsContainer");
+
+    // Wait for the renderer's async init() to paint the works list.
+    const worksRendered = () => {
       const wrk = document.getElementById("worksContainer");
+      return !!wrk && wrk.textContent.includes(${JSON.stringify(SEED_WORK_TITLE)});
+    };
+    while (!worksRendered() && Date.now() < deadline) await sleep(50);
+    out.worksText = (document.getElementById("worksContainer") || {}).textContent || "";
+
+    // 点开作品：它的来源（站点 + 版本）与访问都在详情里。
+    const row = document.querySelector("#worksContainer [data-work-id]");
+    if (row) row.click();
+    const detailShown = () => {
+      const d = document.getElementById("workDetailView");
+      const src = document.getElementById("workSources");
       return (
-        rec && rec.textContent.includes(${JSON.stringify(SEED_TITLE)}) &&
-        wrk && wrk.textContent.includes(${JSON.stringify(SEED_WORK_TITLE)})
+        !!d && d.style.display !== "none" &&
+        !!src && src.textContent.includes(${JSON.stringify(SEED_EDITION)})
       );
     };
-    while (!rendered() && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    while (!detailShown() && Date.now() < deadline) await sleep(50);
 
+    const detail = document.getElementById("workDetailView");
+    const sources = document.getElementById("workSources");
+    const visits = document.getElementById("recordsContainer");
+    const latest = document.getElementById("btnOpenLatest");
+    out.detailVisible = !!detail && detail.style.display !== "none";
+    out.sourcesText = sources ? sources.textContent : "";
+    out.visitsText = visits ? visits.textContent : "";
+    out.hasOpenLatest = !!latest && latest.style.display !== "none";
     const wl = document.getElementById("watchlist");
-    const rc = document.getElementById("recordsContainer");
-    const wk = document.getElementById("worksContainer");
     out.watchlistText = wl ? wl.textContent : "";
-    out.recordsText = rc ? rc.textContent : "";
-    out.worksText = wk ? wk.textContent : "";
 
     // Round-trip every route. A missing handler rejects with distinctive text;
     // channels that need arguments may reject with a handler-level error, which
@@ -178,10 +213,6 @@ async function main() {
     "renderer did not render the seeded watchlist entry",
   );
   expect(
-    probe.recordsText.includes(SEED_TITLE),
-    "renderer did not render the seeded record",
-  );
-  expect(
     probe.worksText.includes(SEED_WORK_TITLE),
     "renderer did not render the seeded work",
   );
@@ -190,8 +221,35 @@ async function main() {
     "renderer did not render the work's score",
   );
   expect(
-    probe.worksText.includes(SEED_WORK_SITE),
+    probe.worksText.includes("B站"),
     "renderer did not render the work's site",
+  );
+  expect(probe.detailVisible, "clicking a work did not open its detail");
+  expect(
+    probe.sourcesText.includes("B站") && probe.sourcesText.includes("电视猫"),
+    "work detail did not list each source separately",
+  );
+  expect(
+    probe.sourcesText.includes(SEED_EDITION),
+    "work detail did not render the edition",
+  );
+  expect(
+    probe.sourcesText.includes(SEED_VISIT_URL_A) &&
+      probe.sourcesText.includes(SEED_VISIT_URL_B),
+    "work detail did not render each source's latest address",
+  );
+  expect(
+    probe.visitsText.includes(SEED_VISIT_URL_A) &&
+      probe.visitsText.includes(SEED_VISIT_URL_B),
+    "work detail did not render every visit's address",
+  );
+  expect(
+    probe.visitsText.includes(SEED_DWELL_TEXT),
+    "work detail did not render the visit's dwell time",
+  );
+  expect(
+    probe.hasOpenLatest,
+    "work detail did not offer opening the latest visit",
   );
   expect(
     consoleErrors.length === 0,

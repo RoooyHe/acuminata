@@ -15,6 +15,8 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     store.getWorksPage(page, pageSize, options),
   );
 
+  ipcMain.handle("works:detail", (_, workId) => store.getWorkDetail(workId));
+
   ipcMain.handle("records:list", () => store.getAllRecords());
 
   ipcMain.handle("records:stats", () => store.getStats());
