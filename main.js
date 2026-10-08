@@ -17,7 +17,10 @@ const { createAIProviders } = require("./agent/providers");
 const { evaluateIncoming } = require("./agent/cluster");
 
 const EXTENSION_PORT = 8766;
-const DB_PATH = path.join(app.getPath("userData"), "tracker.db");
+// Explicit override only (used by the smoke test); otherwise the user's real DB.
+const DB_PATH = process.env.ACUMINATA_DB_PATH
+  ? process.env.ACUMINATA_DB_PATH
+  : path.join(app.getPath("userData"), "tracker.db");
 
 let mainWindow;
 let extensionServer;

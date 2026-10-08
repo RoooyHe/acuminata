@@ -1,56 +1,52 @@
+// Sandboxed preload: may only require `electron` (local requires are not allowed
+// under sandbox:true). Shared view-model utils reach the renderer via <script>.
 const { contextBridge, ipcRenderer } = require("electron");
-const {
-  escapeHtml,
-  formatTime,
-  dateGroupLabel,
-  getDomainColor,
-  matchesSearch,
-} = require("../shared/utils");
 
 // ── Route table ──────────────────────────────────────────────────────────────
-// Each entry: { channel, invoke: true|false }
-// invoke = true  → ipcRenderer.invoke (returns a promise)
-// invoke = false → ipcRenderer.on (event listener)
+// Single list of every renderer-callable surface.
+//   name    → property exposed on window.electronAPI
+//   channel → IPC channel; must match a handler registered by agent/ipc-dispatcher.js
+//   invoke  → true: ipcRenderer.invoke, false: ipcRenderer.on (main → renderer event)
 
 const ROUTES = [
   // Records
-  { channel: "records:page", invoke: true },
-  { channel: "records:list", invoke: true },
-  { channel: "records:stats", invoke: true },
-  { channel: "records:clear", invoke: true },
-  { channel: "records:delete", invoke: true },
-  { channel: "records:export", invoke: true },
-  { channel: "records:pin", invoke: true },
-  { channel: "records:open-url", invoke: true },
+  { name: "getRecordsPage", channel: "records:page", invoke: true },
+  { name: "getRecords", channel: "records:list", invoke: true },
+  { name: "getStatistics", channel: "records:stats", invoke: true },
+  { name: "clearRecords", channel: "records:clear", invoke: true },
+  { name: "deleteRecords", channel: "records:delete", invoke: true },
+  { name: "exportData", channel: "records:export", invoke: true },
+  { name: "toggleRecordPin", channel: "records:pin", invoke: true },
+  { name: "openUrl", channel: "records:open-url", invoke: true },
   // Watchlist
-  { channel: "watchlist:get", invoke: true },
-  { channel: "watchlist:add", invoke: true },
-  { channel: "watchlist:remove", invoke: true },
+  { name: "getWatchlist", channel: "watchlist:get", invoke: true },
+  { name: "addToWatchlist", channel: "watchlist:add", invoke: true },
+  { name: "removeFromWatchlist", channel: "watchlist:remove", invoke: true },
   // Settings
-  { channel: "settings:enabled", invoke: true },
-  { channel: "settings:set-enabled", invoke: true },
-  { channel: "settings:bounds", invoke: true },
-  { channel: "settings:save-bounds", invoke: true },
+  { name: "getEnabled", channel: "settings:enabled", invoke: true },
+  { name: "setEnabled", channel: "settings:set-enabled", invoke: true },
+  { name: "getBounds", channel: "settings:bounds", invoke: true },
+  { name: "saveBounds", channel: "settings:save-bounds", invoke: true },
   // Locale
-  { channel: "locale:get", invoke: true },
-  { channel: "locale:set", invoke: true },
+  { name: "getLocale", channel: "locale:get", invoke: true },
+  { name: "setLocale", channel: "locale:set", invoke: true },
   // AI
-  { channel: "ai:config:get", invoke: true },
-  { channel: "ai:config:set", invoke: true },
+  { name: "getAiConfig", channel: "ai:config:get", invoke: true },
+  { name: "setAiConfig", channel: "ai:config:set", invoke: true },
   // Recommendations
-  { channel: "recommendations:list", invoke: true },
-  { channel: "recommendations:reject", invoke: true },
-  { channel: "recommendations:accept", invoke: true },
-  { channel: "recommendations:clear", invoke: true },
+  { name: "getRecommendations", channel: "recommendations:list", invoke: true },
+  { name: "rejectRecommendation", channel: "recommendations:reject", invoke: true },
+  { name: "acceptRecommendation", channel: "recommendations:accept", invoke: true },
+  { name: "clearRecommendations", channel: "recommendations:clear", invoke: true },
   // Agent
-  { channel: "agent:pending", invoke: true },
-  { channel: "agent:approve", invoke: true },
-  { channel: "agent:dismiss", invoke: true },
-  { channel: "agent:profile", invoke: true },
-  { channel: "agent:analyze", invoke: true },
-  { channel: "agent:auto-clean", invoke: true },
+  { name: "agentGetPending", channel: "agent:pending", invoke: true },
+  { name: "agentApproveActions", channel: "agent:approve", invoke: true },
+  { name: "agentDismissActions", channel: "agent:dismiss", invoke: true },
+  { name: "agentGetProfile", channel: "agent:profile", invoke: true },
+  { name: "triggerAgentAnalysis", channel: "agent:analyze", invoke: true },
+  { name: "agentAutoClean", channel: "agent:auto-clean", invoke: true },
   // Data-update events (broadcast from main)
-  { channel: "data-update", invoke: false },
+  { name: "onUpdate", channel: "data-update", invoke: false },
 ];
 
 // ── Generate API ─────────────────────────────────────────────────────────────
@@ -59,20 +55,15 @@ const api = {};
 
 for (const route of ROUTES) {
   if (route.invoke) {
-    api[route.channel] = (...args) =>
-      ipcRenderer.invoke(route.channel, ...args);
+    api[route.name] = (...args) => ipcRenderer.invoke(route.channel, ...args);
   } else {
-    api[`on${route.channel.split(":").map((s) => s[0].toUpperCase() + s.slice(1)).join("")}`] =
-      (callback) =>
-        ipcRenderer.on(route.channel, (_, data) => callback(data));
+    api[route.name] = (callback) =>
+      ipcRenderer.on(route.channel, (_, data) => callback(data));
   }
 }
 
 contextBridge.exposeInMainWorld("electronAPI", api);
-contextBridge.exposeInMainWorld("sharedUtils", {
-  escapeHtml,
-  formatTime,
-  dateGroupLabel,
-  getDomainColor,
-  matchesSearch,
-});
+
+// Exposed for the IPC contract test so preload's channel list is not a second
+// handwritten copy that can silently drift from the dispatcher's handlers.
+if (typeof module !== "undefined" && module.exports) module.exports = { ROUTES };
