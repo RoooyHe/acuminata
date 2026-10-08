@@ -20,6 +20,7 @@ Two separate `package.json` files — **root** (Electron) and **extend/** (Plasm
 # Desktop
 npm start          # launch Electron
 npm run dev        # launch with DevTools open
+npm test           # run agent/*.test.js (no Electron needed)
 
 # Extension (cd extend/)
 npm run build      # production build → build/chrome-mv3-prod/
@@ -53,9 +54,11 @@ When mode changes (SET_MODE message), `background.ts` connects or disconnects WS
 
 ## Data model (SQLite)
 
-Tables: `records`, `watchlist`, `settings`, `recommendations`.
+Tables: `records`, `works`, `work_keys`, `watchlist`, `settings`, `recommendations`.
 
-Key columns in `records`: `id`, `url`, `title`, `domain`, `matchedRule`, `tabId`, `timestamp`, `pinned`, `score`, `createdAt`, `updatedAt`.
+`records` is a **visit event**; `works` is the content itself, fused across sites. `work_keys` holds one or more identity keys per work (content code / cover hash / normalized title / synopsis fingerprint) — any single match merges. Daily +1 scoring lives on `works`, so the same work watched on two sites accumulates into one score.
+
+Key columns in `records`: `id`, `url`, `title`, `domain`, `matchedRule`, `tabId`, `timestamp`, `pinned`, `score`, `workId`, `createdAt`, `updatedAt`.
 
 Deduplication: same URL + same tabId within 60s is ignored. `chrome://` and `chrome-extension://` URLs are never tracked.
 
