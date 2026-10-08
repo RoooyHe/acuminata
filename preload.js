@@ -11,6 +11,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 const ROUTES = [
   // Records
   { name: "getRecordsPage", channel: "records:page", invoke: true },
+  { name: "getWorksPage", channel: "works:page", invoke: true },
   { name: "getRecords", channel: "records:list", invoke: true },
   { name: "getStatistics", channel: "records:stats", invoke: true },
   { name: "clearRecords", channel: "records:clear", invoke: true },

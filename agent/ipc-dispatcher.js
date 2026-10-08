@@ -11,6 +11,10 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     store.getRecordsPage(page, pageSize, filter),
   );
 
+  ipcMain.handle("works:page", (_, page, pageSize, options) =>
+    store.getWorksPage(page, pageSize, options),
+  );
+
   ipcMain.handle("records:list", () => store.getAllRecords());
 
   ipcMain.handle("records:stats", () => store.getStats());

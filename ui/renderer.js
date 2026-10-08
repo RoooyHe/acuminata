@@ -17,6 +17,15 @@ let stats = null;
 /** @type {Set<string>} */
 let selectedIds = new Set();
 
+// 作品主视图状态
+/** @type {Array<Object>} */
+let works = [];
+let worksPage = 1;
+let worksTotal = 0;
+let worksSort = "score";
+let worksSite = "all";
+const worksPageSize = 50;
+
 // --- 基础工具函数 ---
 /**
  * @param {number} ts
@@ -206,6 +215,79 @@ async function refreshStats() {
   renderStats();
 }
 
+// --- 作品主视图 ---
+function siteLabel(rule) {
+  const entry = watchlist.find((w) => w.domain === rule);
+  return entry ? entry.label || entry.domain : rule;
+}
+
+function renderWorksSiteBar() {
+  const bar = document.getElementById("worksSiteBar");
+  const labels = Object.keys((stats && stats.domainCounts) || {});
+  let html = `<div class="filter-chip ${worksSite === "all" ? "active" : ""}" data-site="all">全部</div>`;
+  labels.forEach((label) => {
+    html += `<div class="filter-chip ${worksSite === label ? "active" : ""}" data-site="${escapeHtml(label)}">${escapeHtml(label)}</div>`;
+  });
+  bar.innerHTML = html;
+}
+
+function renderWorks() {
+  const container = document.getElementById("worksContainer");
+  const more = document.getElementById("worksLoadMoreContainer");
+
+  if (works.length === 0) {
+    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${
+      worksSite !== "all" ? "该站点下暂无作品" : "还没有归入作品的访问"
+    }</div>`;
+    more.innerHTML = "";
+    return;
+  }
+
+  container.innerHTML = works
+    .map((w) => {
+      const sites = (w.sites || [])
+        .map((rule) => {
+          const color = getDomainColor(rule);
+          return `<span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(siteLabel(rule))}</span>`;
+        })
+        .join("");
+      return `
+      <div class="data-item" data-work-id="${w.id}">
+        <div class="item-body">
+          <div class="item-title">${escapeHtml(w.title || "未命名作品")}</div>
+          <div class="item-meta">
+            <span class="badge">${w.score || 0} 分</span>
+            <span>${w.sourceCount || 0} 个来源</span>
+            <span>${w.visitCount || 0} 次访问</span>
+            ${sites}
+            <span>${w.lastVisitAt ? formatTime(w.lastVisitAt) : "无访问"}</span>
+          </div>
+        </div>
+      </div>
+    `;
+    })
+    .join("");
+
+  if (works.length < worksTotal) {
+    more.innerHTML = `<button id="btnWorksLoadMore" class="btn btn-ghost">加载更多 (${works.length} / ${worksTotal})</button>`;
+    document.getElementById("btnWorksLoadMore").onclick = () =>
+      loadWorks(worksPage + 1);
+  } else {
+    more.innerHTML = "";
+  }
+}
+
+async function loadWorks(page) {
+  const result = await window.electronAPI.getWorksPage(page, worksPageSize, {
+    site: worksSite,
+    sort: worksSort,
+  });
+  works = page === 1 ? result.works : works.concat(result.works);
+  worksPage = page;
+  worksTotal = result.total;
+  renderWorks();
+}
+
 // --- 事件监听 ---
 document.querySelectorAll(".nav-item").forEach((item) => {
   item.onclick = function () {
@@ -291,6 +373,24 @@ document.getElementById("filterBar").onclick = async function (e) {
     renderFilterBar();
     loadRecords(1);
   }
+};
+
+document.getElementById("worksSortBar").onclick = function (e) {
+  const chip = e.target.closest(".filter-chip");
+  if (!chip) return;
+  worksSort = chip.dataset.sort;
+  document
+    .querySelectorAll("#worksSortBar .filter-chip")
+    .forEach((c) => c.classList.toggle("active", c === chip));
+  loadWorks(1);
+};
+
+document.getElementById("worksSiteBar").onclick = function (e) {
+  const chip = e.target.closest(".filter-chip");
+  if (!chip) return;
+  worksSite = chip.dataset.site;
+  renderWorksSiteBar();
+  loadWorks(1);
 };
 
 document.getElementById("searchInput").oninput = function () {
@@ -381,7 +481,9 @@ async function init() {
   document.getElementById("enabledToggle").checked = enabled;
   renderWatchlist();
   renderFilterBar();
+  renderWorksSiteBar();
   loadRecords(1);
+  loadWorks(1);
   setWsStatus(true);
 
   const aiCfg = await window.electronAPI.getAiConfig();
@@ -395,12 +497,17 @@ async function init() {
 window.electronAPI.onUpdate((data) => {
   if (data.type === "recordAdded" || data.type === "recordUpdated") {
     // 简单起见，收到更新就刷新统计和第一页
-    refreshStats();
-    renderFilterBar();
+    refreshStats().then(() => {
+      renderFilterBar();
+      renderWorksSiteBar();
+    });
     loadRecords(1);
+    loadWorks(1);
   } else if (data.type === "recordsCleared") {
     records = [];
     renderRecords();
+    works = [];
+    renderWorks();
     refreshStats();
   } else if (data.type === "agentPendingUpdated") {
     loadPendingActions();

@@ -403,6 +403,20 @@ class RecordStore {
 
   // ── Records ────────────────────────────────────────────────────────────────
 
+  /**
+   * 把一个站点筛选值（watchlist 标签，或未登记站点的原始 matchedRule）
+   * 解析成 matchedRule 列表。“all”/空 返回 null 表示不筛选。
+   * @param {string} value
+   * @returns {string[]|null}
+   */
+  _siteRules(value) {
+    if (!value || value === "all") return null;
+    const domains = this.getWatchlist()
+      .filter((w) => (w.label || w.domain) === value)
+      .map((w) => w.domain);
+    return domains.length > 0 ? domains : [value];
+  }
+
   getRecordById(id) {
     return this._dbGet("SELECT * FROM records WHERE id = ?", [id]);
   }
@@ -420,16 +434,13 @@ class RecordStore {
       countParams = [];
       params = [pageSize, offset];
     } else if (filter && filter !== "all") {
-      const watchlist = this.getWatchlist();
-      const domains = watchlist
-        .filter((w) => (w.label || w.domain) === filter)
-        .map((w) => w.domain);
-      if (domains.length > 0) {
-        const placeholders = domains.map(() => "?").join(",");
+      const rules = this._siteRules(filter);
+      if (rules) {
+        const placeholders = rules.map(() => "?").join(",");
         countSql = `SELECT COUNT(*) as total FROM records WHERE matchedRule IN (${placeholders})`;
         dataSql = `SELECT * FROM records WHERE matchedRule IN (${placeholders}) ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
-        countParams = domains;
-        params = [...domains, pageSize, offset];
+        countParams = rules;
+        params = [...rules, pageSize, offset];
       }
     }
 
@@ -672,6 +683,62 @@ class RecordStore {
     this.linkWorkKeys(work.id, keys);
 
     return { work, created, ambiguous };
+  }
+
+  /**
+   * 分页读取作品，携带聚合字段（来源数、访问数、最近访问时间、站点集合）。
+   * 聚合与筛选全部走 SQL：只读一页，不把全部作品读进内存。
+   * @param {number} page 1 起
+   * @param {number} pageSize
+   * @param {{ site?: string, sort?: "score"|"recent" }} [options] site 为 watchlist 的站点标签；"all" 表示不限
+   * @returns {{ works: Array<Object>, total: number, page: number, pageSize: number }}
+   */
+  getWorksPage(page = 1, pageSize = 50, options = {}) {
+    const offset = (page - 1) * pageSize;
+    const sort = options.sort === "recent" ? "recent" : "score";
+    const site = options.site;
+
+    let where = "";
+    let filterParams = [];
+    const rules = this._siteRules(site);
+    if (rules) {
+      const placeholders = rules.map(() => "?").join(",");
+      where = `WHERE EXISTS (SELECT 1 FROM records r WHERE r.workId = w.id AND r.matchedRule IN (${placeholders}))`;
+      filterParams = rules;
+    }
+
+    const total = this._dbGet(
+      `SELECT COUNT(*) as total FROM works w ${where}`,
+      filterParams,
+    ).total;
+
+    const orderBy =
+      sort === "recent"
+        ? "lastVisitAt DESC, w.score DESC"
+        : "w.score DESC, lastVisitAt DESC";
+
+    const rows = this._dbAll(
+      `SELECT w.*,
+              COUNT(r.id) AS visitCount,
+              COALESCE(MAX(r.timestamp), 0) AS lastVisitAt,
+              COUNT(DISTINCT r.matchedRule) AS sourceCount,
+              COALESCE(GROUP_CONCAT(DISTINCT r.matchedRule), '') AS siteRules
+       FROM works w
+       LEFT JOIN records r ON r.workId = w.id
+       ${where}
+       GROUP BY w.id
+       ORDER BY ${orderBy}
+       LIMIT ? OFFSET ?`,
+      [...filterParams, pageSize, offset],
+    );
+
+    const works = rows.map((row) => {
+      const sites = row.siteRules ? row.siteRules.split(",") : [];
+      delete row.siteRules;
+      return { ...row, sites };
+    });
+
+    return { works, total, page, pageSize };
   }
 
   // ── Recommendations ────────────────────────────────────────────────────────

@@ -357,6 +357,93 @@ async function runTests() {
     assert(back.workId === w.work.id, "读回来 workId 还在");
   }
 
+  // ── 作品列表：聚合字段 + 分页 + 站点筛选 + 排序 ──
+  console.log("\nTest: Works — 分页读取携带聚合字段");
+  {
+    const s = await initStore();
+    s.addWatchlist({ domain: "tvmao.com", label: "电视猫", color: "#fff" });
+    const day1 = new Date(2026, 2, 1, 10).getTime();
+    const day2 = new Date(2026, 2, 2, 10).getTime();
+    const day3 = new Date(2026, 2, 3, 10).getTime();
+    const synopsis = [
+      { kind: "synopsis", value: "聚合测试的共用简介", confidence: "medium" },
+    ];
+
+    // 作品甲：两站、三次访问、最近 day2、分数 2
+    const jia = s.recordWorkVisit({
+      keys: [
+        { kind: "cover_hash", value: "a".repeat(32), confidence: "high" },
+        ...synopsis,
+      ],
+      title: "甲作品",
+      timestamp: day1,
+    });
+    s.recordWorkVisit({ keys: [...synopsis], title: "甲作品", timestamp: day2 });
+    s.insertRecord({ id: "j1", url: "https://bilibili.com/v/1", title: "甲作品", domain: "bilibili.com", matchedRule: "bilibili.com", tabId: 1, timestamp: day1, workId: jia.work.id });
+    s.insertRecord({ id: "j2", url: "https://bilibili.com/v/1", title: "甲作品", domain: "bilibili.com", matchedRule: "bilibili.com", tabId: 1, timestamp: day1 + 3600e3, workId: jia.work.id });
+    s.insertRecord({ id: "j3", url: "https://tvmao.com/k/1", title: "甲作品", domain: "tvmao.com", matchedRule: "tvmao.com", tabId: 2, timestamp: day2, workId: jia.work.id });
+
+    // 作品乙：单站、最近 day3、分数 1
+    const yi = s.recordWorkVisit({
+      keys: [{ kind: "code", value: "YI-1", confidence: "high" }],
+      title: "乙作品",
+      timestamp: day3,
+    });
+    s.insertRecord({ id: "y1", url: "https://tvmao.com/k/2", title: "乙作品", domain: "tvmao.com", matchedRule: "tvmao.com", tabId: 2, timestamp: day3, workId: yi.work.id });
+
+    const byScore = s.getWorksPage(1, 10, { sort: "score" });
+    assert(byScore.total === 2, "总作品数为 2");
+    assert(byScore.works[0].id === jia.work.id, "按分数降序时甲作品在前");
+    assert(byScore.works[0].score === 2, "甲作品分数为 2");
+    assert(byScore.works[0].visitCount === 3, "甲作品访问数为 3");
+    assert(byScore.works[0].sourceCount === 2, "甲作品来源数为 2");
+    assert(byScore.works[0].lastVisitAt === day2, "甲作品最近访问时间为 day2");
+    assert(
+      byScore.works[0].sites.slice().sort().join(",") === "bilibili.com,tvmao.com",
+      "甲作品站点集合为两个站",
+    );
+
+    const byRecent = s.getWorksPage(1, 10, { sort: "recent" });
+    assert(byRecent.works[0].id === yi.work.id, "按最近访问排序时乙作品在前");
+
+    const paged = s.getWorksPage(1, 1, { sort: "score" });
+    assert(paged.works.length === 1, "每页 1 条时只返回 1 条");
+    assert(paged.total === 2, "分页时总数仍是 2");
+    const page2 = s.getWorksPage(2, 1, { sort: "score" });
+    assert(page2.works[0].id === yi.work.id, "第二页拿到乙作品（没有把全部作品读进内存）");
+
+    const bySite = s.getWorksPage(1, 10, { site: "B站" });
+    assert(bySite.total === 1, "按站点筛选：B站下只有 1 部作品");
+    assert(bySite.works[0].id === jia.work.id, "筛出的正是出现在 B站 的甲作品");
+  }
+
+  // ── 站点筛选：未登记站点的原始域名也要真的过滤 ──
+  console.log("\nTest: Works — 未登记站点的原始域名筛选");
+  {
+    const s = await initStore(); // 默认只有 bilibili.com
+    const t = Date.now();
+    const raw = s.recordWorkVisit({
+      keys: [{ kind: "code", value: "RAW-1", confidence: "high" }],
+      title: "未登记站作品",
+      timestamp: t,
+    });
+    s.insertRecord({ id: "raw-1", url: "https://example.com/v/1", title: "未登记站作品", domain: "example.com", matchedRule: "example.com", tabId: 1, timestamp: t, workId: raw.work.id });
+    const other = s.recordWorkVisit({
+      keys: [{ kind: "code", value: "RAW-2", confidence: "high" }],
+      title: "B站作品",
+      timestamp: t,
+    });
+    s.insertRecord({ id: "raw-2", url: "https://bilibili.com/v/2", title: "B站作品", domain: "bilibili.com", matchedRule: "bilibili.com", tabId: 1, timestamp: t, workId: other.work.id });
+
+    const byRaw = s.getWorksPage(1, 10, { site: "example.com" });
+    assert(byRaw.total === 1, "按未登记站点的原始域名筛选只返回 1 部作品");
+    assert(byRaw.works[0].id === raw.work.id, "筛出的正是该域名下的作品");
+
+    const byLabel = s.getWorksPage(1, 10, { site: "B站" });
+    assert(byLabel.total === 1, "按登记站点的标签筛选只返回 1 部作品");
+    assert(byLabel.works[0].id === other.work.id, "标签筛选命中该站的作品");
+  }
+
   console.log("\n✅ All RecordStore tests passed!");
   process.exit(0);
 }
