@@ -73,6 +73,25 @@ async function seedDatabase() {
     timestamp: Date.now(),
     workId: null,
   });
+  // 两路身份键指向不同作品：歧义必须在界面上可见，不是只写进控制台。
+  store.recordWorkVisit({
+    keys: [{ kind: "code", value: "SMOKE-CONFLICT-A", confidence: "high" }],
+    title: "SMOKE 歧义甲",
+    timestamp: ts - 120000,
+  });
+  store.recordWorkVisit({
+    keys: [{ kind: "cover_hash", value: "c".repeat(32), confidence: "high" }],
+    title: "SMOKE 歧义乙",
+    timestamp: ts - 120000,
+  });
+  store.recordWorkVisit({
+    keys: [
+      { kind: "code", value: "SMOKE-CONFLICT-A", confidence: "high" },
+      { kind: "cover_hash", value: "c".repeat(32), confidence: "high" },
+    ],
+    title: "SMOKE 歧义丙",
+    timestamp: ts - 120000,
+  });
   fs.writeFileSync(dbPath, Buffer.from(store.export()));
 }
 
@@ -110,6 +129,7 @@ function pageProbe(invokeRoutes) {
       unregistered: [],
       watchlistText: "",
       worksText: "",
+      ambiguousText: "",
       backfillText: "",
       worksHealthText: "",
       unattributedText: "",
@@ -134,6 +154,7 @@ function pageProbe(invokeRoutes) {
     };
     while (!worksRendered() && Date.now() < deadline) await sleep(50);
     out.worksText = (document.getElementById("worksContainer") || {}).textContent || "";
+    out.ambiguousText = (document.getElementById("ambiguousWorks") || {}).textContent || "";
 
     // 「未归类」是一个可浏览的分组：点开它，未归属的访问要列出来。
     out.worksHealthText = (document.getElementById("worksHealth") || {}).textContent || "";
@@ -272,6 +293,11 @@ async function main() {
   expect(
     probe.worksText.includes("B站"),
     "renderer did not render the work's site",
+  );
+  expect(
+    probe.ambiguousText.includes("SMOKE 歧义甲") &&
+      probe.ambiguousText.includes("SMOKE 歧义乙"),
+    "renderer did not surface ambiguous works: " + probe.ambiguousText,
   );
   expect(probe.detailVisible, "clicking a work did not open its detail");
   expect(

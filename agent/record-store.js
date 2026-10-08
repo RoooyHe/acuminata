@@ -105,6 +105,18 @@ class RecordStore {
     )`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_wk_work ON work_keys(workId)`);
 
+    // work_ambiguities：同一批身份键指向了不同作品时的歧义记录（ADR-0002）。
+    // 判定在写入时做出并落库，不在读取时重新推断；本轮只报告，不做裁决 UI。
+    // 成对排序 + 主键去重，重跑（含回填）不会重复记账。
+    this.db.run(`CREATE TABLE IF NOT EXISTS work_ambiguities (
+      workA TEXT NOT NULL,
+      workB TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      value TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      PRIMARY KEY (workA, workB, kind, value)
+    )`);
+
     this.db.run(`CREATE TABLE IF NOT EXISTS watchlist (
       domain TEXT PRIMARY KEY,
       label TEXT NOT NULL DEFAULT '',
@@ -638,6 +650,28 @@ class RecordStore {
   }
 
   /**
+   * 把「这批身份键里有些指向别的作品」的事实落库——那是需要用户裁决的歧义。
+   * 判定在写入时做出并留痕（ADR-0002），不在读取时重新推断。
+   * 只收参与合并的键（medium 及以上），与 recordWorkVisit 的 ambiguous 同源。
+   */
+  recordAmbiguities(workId, keys) {
+    const nowTs = now();
+    for (const k of keys || []) {
+      if (!KEY_KINDS.includes(k.kind) || !k.value) continue;
+      const owner = this._dbGet(
+        "SELECT workId FROM work_keys WHERE kind = ? AND value = ?",
+        [k.kind, k.value],
+      );
+      if (!owner || owner.workId === workId) continue;
+      const [a, b] = [workId, owner.workId].sort();
+      this._dbRun(
+        "INSERT OR IGNORE INTO work_ambiguities (workA, workB, kind, value, createdAt) VALUES (?, ?, ?, ?, ?)",
+        [a, b, k.kind, k.value, nowTs],
+      );
+    }
+  }
+
+  /**
    * 一次访问落到作品上：找到就累加计分，找不到就建新的。
    * 计分是**作品层**的：同一天最多 +1，无论从哪个站、哪个版本进入。
    * @returns {{ work: Object|null, created: boolean, ambiguous: boolean }} work 为 null 表示降级（记录仍会存在）
@@ -681,6 +715,10 @@ class RecordStore {
       );
       work = this.getWork(work.id);
     }
+
+    // 判定已经做出（work 选定）。只有参与合并的键（usable）指向别的作品才算歧义；
+    // 低可信度标题键不参与合并，与 ambiguous 同源。事实落库，界面才看得见。
+    this.recordAmbiguities(work.id, usable);
 
     // 低可信度键（如归一化标题）也入库：它们不参与自动合并，但是待确认队列的种子。
     this.linkWorkKeys(work.id, keys);
@@ -810,6 +848,30 @@ class RecordStore {
     return this._dbGet(
       "SELECT COUNT(*) as total FROM records WHERE workId IS NULL",
     ).total;
+  }
+
+  /**
+   * 歧义作品列表：同一批身份键指向了不同作品的那些对。
+   * 只报告，不提供裁决 UI（本轮 out of scope）。
+   * @returns {Array<{kind:string, value:string, createdAt:number,
+   *   workA:{id:string,title:string}, workB:{id:string,title:string}}>}
+   */
+  getAmbiguousWorks() {
+    return this._dbAll(
+      `SELECT c.kind, c.value, c.createdAt,
+              a.id AS aId, a.title AS aTitle,
+              b.id AS bId, b.title AS bTitle
+       FROM work_ambiguities c
+       JOIN works a ON a.id = c.workA
+       JOIN works b ON b.id = c.workB
+       ORDER BY c.createdAt DESC`,
+    ).map((r) => ({
+      kind: r.kind,
+      value: r.value,
+      createdAt: r.createdAt,
+      workA: { id: r.aId, title: r.aTitle },
+      workB: { id: r.bId, title: r.bTitle },
+    }));
   }
 
   /**
