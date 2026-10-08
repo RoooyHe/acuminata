@@ -32,6 +32,20 @@ async function runTests() {
     title: "分派器作品",
     timestamp: t,
   });
+  // 两路身份键指向不同作品：健康度要能把这对歧义报出来。
+  store.recordWorkVisit({
+    keys: [{ kind: "cover_hash", value: "c".repeat(32), confidence: "high" }],
+    title: "分派器作品乙",
+    timestamp: t,
+  });
+  store.recordWorkVisit({
+    keys: [
+      { kind: "code", value: "DISP-1", confidence: "high" },
+      { kind: "cover_hash", value: "c".repeat(32), confidence: "high" },
+    ],
+    title: "分派器歧义",
+    timestamp: t,
+  });
   store.insertRecord({
     id: "d-att-1",
     url: "https://bilibili.com/v/a",
@@ -84,7 +98,17 @@ async function runTests() {
   assert(health.unattributedCount === 1, "健康度携带未归属计数");
   assert(Array.isArray(health.adapters) && health.adapters.length === 2, "健康度携带站点适配器列表");
   assert(health.adapters[1].suspect === true, "失效站点在载荷里被标出");
-  console.log("  ✓ works:health 携带未归属计数与适配器命中情况");
+  assert(
+    Array.isArray(health.ambiguousWorks) && health.ambiguousWorks.length === 1,
+    "健康度携带歧义作品列表",
+  );
+  assert(
+    [health.ambiguousWorks[0].workA.title, health.ambiguousWorks[0].workB.title]
+      .sort()
+      .join() === ["分派器作品", "分派器作品乙"].sort().join(),
+    "歧义列表指出是哪两部作品",
+  );
+  console.log("  ✓ works:health 携带未归属计数、适配器命中与歧义作品列表");
 
   // 未归属页面与健康度看到的是同一个数字
   assert(

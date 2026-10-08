@@ -378,6 +378,29 @@ async function loadHealth() {
   health = await window.electronAPI.getWorkHealth();
   renderUnattributedGroup();
   renderAdapterHealth();
+  renderAmbiguousWorks();
+}
+
+// 歧义作品：同一批身份键指向了不同作品。只报告哪些需要裁决，不给裁决入口。
+function renderAmbiguousWorks() {
+  const el = document.getElementById("ambiguousWorks");
+  const summary = document.getElementById("ambiguousWorksSummary");
+  if (!el) return;
+  const pairs = (health && health.ambiguousWorks) || [];
+  if (summary) summary.textContent = pairs.length ? `${pairs.length} 组` : "";
+  if (pairs.length === 0) {
+    el.innerHTML = `<div style="color:var(--muted-fg); font-size:12px">没有身份键指向不同作品的访问。</div>`;
+    return;
+  }
+  el.innerHTML = pairs
+    .map(
+      (p) => `
+    <div style="padding:8px 0; border-bottom:1px solid var(--border)">
+      <div style="font-size:13px">${escapeHtml(p.workA.title || p.workA.id)} ⟷ ${escapeHtml(p.workB.title || p.workB.id)}</div>
+      <div style="font-family:var(--font-mono); font-size:11px; color:var(--muted-fg)">${escapeHtml(p.kind)}: ${escapeHtml(p.value)}</div>
+    </div>`,
+    )
+    .join("");
 }
 
 function renderUnattributed() {

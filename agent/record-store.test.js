@@ -331,6 +331,54 @@ async function runTests() {
     });
     assert(merge.ambiguous === true, "两路键指向不同作品时报告歧义（交给用户裁决）");
     assert(merge.work != null, "仍然返回一条作品，不抛错");
+
+    const conflicts = s.getAmbiguousWorks();
+    assert(conflicts.length === 1, "歧义落库，健康度里能看到它");
+    assert(
+      [conflicts[0].workA.id, conflicts[0].workB.id].sort().join() ===
+        [x.work.id, y.work.id].sort().join(),
+      "冲突记录指出的正是那两个作品",
+    );
+
+    // 再报一次同样的歧义：成对去重，不重复记账（回填重跑也走这条路）。
+    s.recordWorkVisit({
+      keys: [
+        { kind: "code", value: "AAA-1", confidence: "high" },
+        { kind: "cover_hash", value: "a".repeat(32), confidence: "high" },
+      ],
+      title: "丙",
+      timestamp: t,
+    });
+    assert(s.getAmbiguousWorks().length === 1, "重复歧义不会重复记账");
+  }
+
+  // ── 低可信度标题键不参与合并，也不该被报成歧义 ──
+  console.log("\nTest: Works — 标题键不报歧义");
+  {
+    const s = await initStore();
+    const t = Date.now();
+    s.recordWorkVisit({
+      keys: [
+        { kind: "code", value: "DDD-1", confidence: "high" },
+        { kind: "title", value: "同名剧", confidence: "low" },
+      ],
+      title: "同名剧",
+      timestamp: t,
+    });
+    // 另一部作品，标题归一化后同名——但高可信度键不同，它们不是同一部。
+    const other = s.recordWorkVisit({
+      keys: [
+        { kind: "code", value: "DDD-2", confidence: "high" },
+        { kind: "title", value: "同名剧", confidence: "low" },
+      ],
+      title: "同名剧",
+      timestamp: t,
+    });
+    assert(other.ambiguous === false, "同标题不是歧义（标题键不参与合并）");
+    assert(
+      s.getAmbiguousWorks().length === 0,
+      "低可信度标题键不会被报成需要裁决的歧义",
+    );
   }
 
   // ── records.workId 能存回来 ──

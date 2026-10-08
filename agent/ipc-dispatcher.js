@@ -21,10 +21,11 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     store.getUnattributedPage(page, pageSize, search),
   );
 
-  // 归属健康度：未归属访问数 + 每站点适配器命中情况。
+  // 归属健康度：未归属访问数 + 每站点适配器命中情况 + 歧义作品列表。
   ipcMain.handle("works:health", () => ({
     unattributedCount: store.getUnattributedCount(),
     adapters: getAdapterHealth(),
+    ambiguousWorks: store.getAmbiguousWorks(),
   }));
 
   ipcMain.handle("works:backfill", () => store.backfillWorks());
