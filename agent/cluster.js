@@ -174,7 +174,9 @@ function computeDailyScore(existing, now) {
  * @param {Array<Object>} watchlist
  * @param {Array<Object>} [groupRules] 分组规则；不传则自己取（回填用）
  * @param {Array<Object>} [adapters] 适配器；没有就是今天的行为（只有旧规则那一路）
- * @returns {{ extracted: object, keys: Array<{kind:string,value:string,confidence:string}> }}
+ * @returns {{ extracted: object, keys: Array<{kind:string,value:string,confidence:string}>,
+ *            adapter: Object|null, parsed: Object }}
+ *          `adapter` / `parsed` 供适配器健康度判断「认下的适配器有没有产出身份字段」。
  */
 function identityKeysFor(incoming, watchlist, groupRules, adapters) {
   const rules =
@@ -199,6 +201,8 @@ function identityKeysFor(incoming, watchlist, groupRules, adapters) {
   return {
     extracted: { ...(adapted ? adapted.parsed : {}), ...fromRules },
     keys,
+    adapter,
+    parsed: adapted ? adapted.parsed : {},
   };
 }
 

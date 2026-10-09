@@ -22,7 +22,7 @@ let worksSite = "all";
 const worksPageSize = 50;
 
 // 未归属访问 + 适配器健康度
-/** @type {{ unattributedCount: number, adapters: Array<{domain:string,matched:number,dropped:number,suspect:boolean}> }|null} */
+/** @type {{ unattributedCount: number, adapters: Array<{key:string,label:string,kind:string,matched:number,dropped:number,suspect:boolean}> }|null} */
 let health = null;
 let worksView = "works";
 /** @type {Array<Object>} */
@@ -354,9 +354,9 @@ function renderAdapterHealth() {
   const summary = document.getElementById("adapterHealthSummary");
   if (!el) return;
   const adapters = (health && health.adapters) || [];
-  if (summary) summary.textContent = adapters.length ? `${adapters.length} 个站点` : "";
+  if (summary) summary.textContent = adapters.length ? `${adapters.length} 项` : "";
   if (adapters.length === 0) {
-    el.innerHTML = `<div style="color:var(--muted-fg); font-size:12px">暂无适配器数据；收到访问后这里会按站点累计命中与丢弃。</div>`;
+    el.innerHTML = `<div style="color:var(--muted-fg); font-size:12px">暂无数据；加载适配器或收到访问后这里会累计命中与丢弃。</div>`;
     return;
   }
   el.innerHTML = adapters
@@ -364,7 +364,8 @@ function renderAdapterHealth() {
       (a) => `
     <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--border)">
       <div style="display:flex; align-items:center; gap:8px; min-width:0">
-        <span style="font-family:var(--font-mono); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(a.domain)}</span>
+        <span style="font-family:var(--font-mono); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(a.label)}</span>
+        ${a.kind === "site" ? '<span style="font-size:10px; color:var(--muted-fg)">站点</span>' : ""}
         ${a.suspect ? '<span class="badge" style="border-color:var(--warning); color:var(--warning)">疑似失效</span>' : ""}
       </div>
       <span style="font-family:var(--font-mono); font-size:11px; color:var(--muted-fg); white-space:nowrap">命中 ${a.matched} / 丢弃 ${a.dropped}</span>
