@@ -9,7 +9,15 @@ const {
   buildDeleteReflectionPrompt,
   buildRejectReflectionPrompt,
 } = require("./prompts");
-const { resolveWorkScore, identityKeysFor } = require("./cluster");
+const {
+  resolveWorkScore,
+  identityKeysFor,
+  isRepeatVisit,
+  computeDailyScore,
+  resolveGroup,
+  extractPath,
+  matchesRegex,
+} = require("./cluster");
 const { KEY_KINDS, CONFIDENCE } = require("./identity");
 
 function uuid() {
@@ -634,6 +642,123 @@ class RecordStore {
   clearRecords() {
     this._dbRun("DELETE FROM records");
     this._emit("recordsCleared");
+  }
+
+  // ── 写入路径：一条访问走一条通道 ──────────────────────────────────────────
+
+  /**
+   * 一条来访的访问，从「这一页算不算作品」到「它属于哪部作品」，一次判完：
+   *
+   *   闸门 → 作品身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库
+   *
+   * 这是访问写入路径的**唯一入口**（docs/adr/0002：判定在写入时做出并落库，只做一次）。
+   * 链路上有两层意义不同的去重与计分，都在这一个方法里：
+   *   - 访问层：`records` 是访问事件。同一组（label 相同 = 同一站点的镜像）里路径相同的
+   *     两条来访是同一次访问；同一标签页 60s 内重报则什么也不做。
+   *   - 作品层：`works` 跨站融合。同一天最多 +1，无论从哪个站、哪个版本进入。
+   *
+   * 调用方只给一条来访消息，不再提供查重回调——查重和落库都要读库，
+   * 把链路交给调用方拼，得到的就是一条谁也没测过的调用顺序。
+   *
+   * @param {Object} incoming 扩展上报的访问：
+   *        {url, title, domain, matchedRule, tabId, timestamp, id?,
+   *         favIconUrl?, description?, ogImage?}
+   * @returns {{ action:"drop"|"ignore"|"insert"|"update", reason?:string,
+   *            record?:Object, work?:Object|null, ambiguous?:boolean,
+   *            keys?:Array<{kind:string,value:string,confidence:string}>, extracted?:Object }}
+   *          work 为 null 表示降级：记录照常存在，只是归不到作品。
+   *          ambiguous 为 true 表示身份键指向多部作品，按 ADR-0002 不静默合并。
+   */
+  recordVisit(incoming) {
+    // 访问发生的时刻由上报方给出（扩展的浏览器时钟）；缺省才用本机时钟。
+    // 这一条对两层计分都成立：访问层与作品层按同一个日期分桶。
+    const ts = incoming.timestamp || now();
+    const watchlist = this.getWatchlist();
+
+    // 1. 分组：label 相同即同一个站点，镜像域名归同一组
+    const group = resolveGroup(incoming.matchedRule, incoming.domain, watchlist);
+
+    // 2. 闸门 + 解析：同一个正则既决定「这一页算不算作品页」，也抠出作品身份
+    if (group.rules.length > 0 && !matchesRegex(group.rules, incoming.title, incoming.url)) {
+      // 这一页不是作品页，丢弃是有意的。但若适配器写错（正则改版失效），
+      // 这里会静默丢历史——调用方必须统计 no-rule-match 并告警（docs/adr/0003）。
+      return { action: "drop", reason: "no-rule-match" };
+    }
+
+    // 3. 作品身份键。拿不到任何键也照常往下走，只是后面归不到作品（降级而非丢弃）。
+    const { extracted, keys } = identityKeysFor(incoming, watchlist, group.rules);
+
+    // 4. 同组同路径去重：镜像上的同一个页面是同一次访问
+    const existing = this._findVisitByPath(group.domains, extractPath(incoming.url));
+
+    // 5. 同一标签页 60s 内重报：还是那一次访问，什么都不做（不落库也不广播）
+    if (isRepeatVisit(existing, incoming, ts)) {
+      return { action: "ignore", keys, extracted };
+    }
+
+    // 6. 访问层当日计分：同路径已有访问 → 更新那一张，不新建
+    const scored = existing ? computeDailyScore(existing, ts) : null;
+
+    // 7. 作品归属 + 作品层当日计分
+    const visit = this.recordWorkVisit({ keys, title: incoming.title, timestamp: ts });
+    const workId = visit.work ? visit.work.id : null;
+    // 适配器的命名捕获组抠出的**版本**随访问落库（来源 = 站点 + 版本）
+    const edition = (extracted && extracted.edition) || "";
+    const outcome = { work: visit.work, ambiguous: visit.ambiguous, keys, extracted };
+
+    // 8. 落库
+    if (existing) {
+      const record = this.updateRecord(existing.id, {
+        url: incoming.url,
+        domain: incoming.domain,
+        matchedRule: incoming.matchedRule,
+        pinned: scored.newPinned,
+        score: scored.newScore,
+        timestamp: ts,
+        updatedAt: scored.newUpdatedAt,
+        workId,
+        edition,
+      });
+      return { action: "update", record, ...outcome };
+    }
+
+    const record = this.insertRecord({
+      id: incoming.id || uuid(),
+      url: incoming.url,
+      title: incoming.title || "",
+      domain: incoming.domain,
+      matchedRule: incoming.matchedRule,
+      tabId: incoming.tabId || 0,
+      timestamp: ts,
+      favIconUrl: incoming.favIconUrl || "",
+      description: incoming.description || "",
+      ogImage: incoming.ogImage || "",
+      workId,
+      edition,
+    });
+    return { action: "insert", record, ...outcome };
+  }
+
+  /**
+   * 同组里路径相同的那条访问。镜像站换域名不该产生第二条访问，所以只看路径。
+   * @param {string[]} groupDomains
+   * @param {string} path - extractPath(url)
+   */
+  _findVisitByPath(groupDomains, path) {
+    const placeholders = groupDomains.map(() => "?").join(",");
+    const rows = this._dbAll(
+      `SELECT * FROM records WHERE matchedRule IN (${placeholders}) ORDER BY timestamp DESC`,
+      groupDomains,
+    );
+    for (const r of rows) {
+      try {
+        const u = new URL(r.url);
+        if (u.pathname + u.search + u.hash === path) return r;
+      } catch (e) {
+        if (r.url === path) return r;
+      }
+    }
+    return null;
   }
 
   // ── Works（作品） ────────────────────────────────────────────────────────────

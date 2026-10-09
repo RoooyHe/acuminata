@@ -574,6 +574,124 @@ async function runTests() {
     assert(s.getWorkDetail("no-such-work") === null, "不存在的作品返回 null");
   }
 
+  // ── 一条访问走一条通道（issue #14） ──
+  // 闸门 → 身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库，一次调用判完。
+  // 调用方不再提供查重回调，所以这些规则只能在 store 上测。
+  console.log("\nTest: recordVisit — 一条访问走一条通道");
+  {
+    const s = await initStore();
+    s.addWatchlist({
+      domain: "example.com",
+      label: "某站",
+      color: "#fff",
+      regexFilter: "/video/(?<code>[0-9]+)",
+      regexTarget: "url",
+    });
+    // 镜像：同一个站点（同 label）的另一个域名，只多提供一条版本规则
+    s.addWatchlist({
+      domain: "example-mirror.com",
+      label: "某站",
+      color: "#fff",
+      regexFilter: "(?<edition>中文字幕|无码)",
+      regexTarget: "title",
+    });
+    // 元数据站：规则只当闸门，抽不出任何字段
+    s.addWatchlist({
+      domain: "tvmao.com",
+      label: "电视猫",
+      color: "#fff",
+      regexFilter: "/kanju/",
+      regexTarget: "url",
+    });
+
+    const day1 = new Date(2026, 4, 1, 10).getTime();
+    const day2 = new Date(2026, 4, 2, 10).getTime();
+    const visit = (over = {}) =>
+      s.recordVisit({
+        id: `v-${over.id || "1"}`,
+        url: "https://example.com/video/123",
+        title: "某剧 第1集",
+        domain: "example.com",
+        matchedRule: "example.com",
+        tabId: 1,
+        timestamp: day1,
+        favIconUrl: "https://example.com/favicon.ico",
+        description: "简介",
+        ogImage: "https://example.com/og.jpg",
+        ...over,
+      });
+
+    // ① 闸门：列表页不进库，但带出原因（适配器健康度靠它统计，docs/adr/0003）
+    const listPage = visit({ id: "list", url: "https://example.com/article/9" });
+    assert(listPage.action === "drop", "列表页被闸门丢弃");
+    assert(listPage.reason === "no-rule-match", "丢弃带出原因");
+    assert(s.getRecordsPage(1, 10, "all").total === 0, "被丢弃的页面没有产生访问");
+
+    // ② 第一条访问：身份键 → 作品 → 落库，全在一次调用里
+    const first = visit();
+    assert(first.action === "insert", "作品页落库一条访问");
+    assert(first.extracted.code === "123", "从命名捕获组抠出内容编号");
+    assert(
+      first.keys.some((k) => k.kind === "code" && k.confidence === "high"),
+      "产出了高可信度的身份键",
+    );
+    assert(first.work !== null, "归入了一部作品");
+    assert(first.record.workId === first.work.id, "访问的 workId 指向那部作品");
+    assert(first.record.favIconUrl === "https://example.com/favicon.ico", "保留 favIconUrl");
+    assert(
+      first.record.description === "简介" && first.record.ogImage === "https://example.com/og.jpg",
+      "保留 description 与 ogImage",
+    );
+
+    // ③ 同一标签页 60s 内重报：还是那一次访问（连 id 都不沿用）
+    const repeat = visit({ id: "repeat", timestamp: day1 + 5000 });
+    assert(repeat.action === "ignore", "60s 内重报判为同一次访问");
+    assert(s.getRecordsPage(1, 10, "all").total === 1, "没有产生第二条访问");
+    assert(s._dbAll("SELECT * FROM works").length === 1, "也没有多建作品");
+
+    // ④ 同一天、同组同路径、另一个标签页：更新那一条，不当日重复计分
+    const sameDay = visit({ id: "tab3", tabId: 3, timestamp: day1 + 3600e3 });
+    assert(sameDay.action === "update", "同组同路径的第二次来访是更新，不是新建");
+    assert(s.getRecordsPage(1, 10, "all").total === 1, "访问仍然只有一条");
+    assert(sameDay.record.pinned === 1 && sameDay.record.score === 1, "首次回访钉住并记 1 分");
+    assert(sameDay.work.score === 1, "同一天作品分数不加");
+
+    // ⑤ 隔天再访：访问层与作品层各自 +1
+    const nextDay = visit({ id: "day2", tabId: 3, timestamp: day2 });
+    assert(nextDay.record.score === 2, "隔天回访访问层 +1");
+    assert(nextDay.work.score === 2, "隔天回访作品层 +1");
+
+    // ⑥ 拿不到身份键：记录照常存在，只是没有归属（降级而非丢弃）
+    const orphan = visit({
+      id: "orphan",
+      url: "https://tvmao.com/kanju/xyz",
+      title: "",
+      domain: "tvmao.com",
+      matchedRule: "tvmao.com",
+      tabId: 2,
+      timestamp: day2,
+    });
+    assert(orphan.action === "insert", "认不出的页面照常落库");
+    assert(orphan.work === null && orphan.record.workId === null, "归不到作品，workId 为空");
+    assert(s.getUnattributedCount() === 1, "它在未归属列表里可见");
+
+    // ⑦ 镜像换域名、同一路径：同一次访问（版本照样落库），作品不变
+    const mirror = visit({
+      id: "mirror",
+      url: "https://example-mirror.com/video/123",
+      title: "某剧 中文字幕",
+      domain: "example-mirror.com",
+      matchedRule: "example-mirror.com",
+      tabId: 4,
+      timestamp: day2 + 3600e3,
+    });
+    assert(mirror.action === "update", "镜像域名上的同一路径是同一次访问");
+    assert(mirror.record.edition === "中文字幕", "适配器抠出的版本随访问落库");
+    assert(mirror.work.id === first.work.id, "镜像上的访问归到同一部作品");
+    assert(mirror.work.score === 2, "同一天不在作品层重复计分");
+    assert(s.getRecordsPage(1, 10, "all").total === 2, "两个站两条访问，一条不少");
+  }
+
   console.log("\n✅ All RecordStore tests passed!");
   process.exit(0);
 }

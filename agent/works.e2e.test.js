@@ -9,10 +9,13 @@
  *
  * 这个测试回答的是整个产品的第一个可观测问题：
  *   两个站上的同一部作品，会不会被归成一条、分数会不会累加。
+ *
+ * 上报走的是真正的那一条通道（RecordStore.recordVisit），不是测试自己拼的
+ * 「抽键 → 归属 → 落库」——拼出来的顺序与生产不一样过一次（每次都当新访问插入），
+ * 而那种差异只有在这里才看得出来。
  */
 
 const { RecordStore } = require("./record-store");
-const { evaluateIncoming } = require("./cluster");
 
 let passed = 0;
 let failed = 0;
@@ -37,33 +40,25 @@ async function runTests() {
 
   const store = new RecordStore(":memory:", () => {});
   await store.init();
+  // 适配器来自 store（写入路径只读它一份），不再由测试单独拿着一份
+  store.updateWatchlist(WATCHLIST);
 
   const day1 = new Date(2026, 2, 1, 10).getTime();
   const day2 = new Date(2026, 2, 2, 10).getTime();
 
-  async function visit(page, ts) {
-    const msg = { ...page, timestamp: ts };
-    const res = evaluateIncoming(msg, WATCHLIST, () => null);
-    if (res.action === "drop" || res.action === "ignore") {
-      return { dropped: res.reason };
-    }
-    const v = store.recordWorkVisit({
-      keys: res.keys,
-      title: page.title,
+  // 一次调用走完整条链路：闸门 → 身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库
+  function visit(page, ts) {
+    return store.recordVisit({
+      ...page,
+      id: page.id || `r-${page.domain}-${ts}`,
       timestamp: ts,
     });
-    store.insertRecord({
-      ...msg,
-      id: `r-${page.domain}-${ts}`,
-      workId: v.work ? v.work.id : null,
-    });
-    return { ...v, keys: res.keys, extracted: res.extracted };
   }
 
   // ── ① A 站第 1 天 ──
   console.log("① A 站（aiqiyi，MacCMS）第 1 天");
-  const a = await visit(AIQIYI, day1);
-  assert(!a.dropped, "作品页没有被丢弃");
+  const a = visit(AIQIYI, day1);
+  assert(a.action === "insert", "作品页落库");
   assert(a.extracted.siteId === "237486", "命名捕获组抠出了站内 id");
   assert(!!a.work, "归入了一部作品");
   assert(a.work.score === 1, "作品分数为 1");
@@ -72,16 +67,17 @@ async function runTests() {
     "产出了封面哈希键",
   );
 
-  // ── ② A 站同一天再回一次 ──
+  // ── ② A 站同一天再回一次（另一个标签页） ──
   console.log("\n② A 站同一天再回一次");
-  const a2 = await visit({ ...AIQIYI, tabId: 3 }, day1 + 3600e3);
+  const a2 = visit({ ...AIQIYI, tabId: 3 }, day1 + 3600e3);
+  assert(a2.action === "update", "同组同路径的再次来访是同一次访问，不是新的一条");
   assert(a2.work.id === a.work.id, "归到同一条作品");
   assert(a2.work.score === 1, "同一天不加分");
 
   // ── ③ B 站第 2 天（元数据站，无封面，无编号） ──
   console.log("\n③ B 站（tvmao，元数据站）第 2 天");
-  const b = await visit(TVMAO, day2);
-  assert(!b.dropped, "元数据站的作品页没有被丢弃");
+  const b = visit(TVMAO, day2);
+  assert(b.action === "insert", "元数据站的作品页落库");
   assert(Object.keys(b.extracted).length === 0, "闸门规则抽不出任何字段（预期）");
   assert(!b.keys.some((k) => k.confidence === "high"), "没有任何高可信度键");
   assert(!!b.work, "仍然归入了一部作品（靠文本指纹）");
@@ -106,15 +102,18 @@ async function runTests() {
   );
 
   const recs = store._dbAll("SELECT id, workId FROM records");
-  assert(recs.length === 3, "三次访问都在 records 里，一条不少");
+  assert(
+    recs.length === 2,
+    "两个站各一条访问：A 站的两回来访是同一条的更新，不是新的一条",
+  );
   assert(
     recs.every((r) => r.workId === a.work.id),
-    "三条访问都挂到了同一条作品上",
+    "两条访问都挂到了同一条作品上",
   );
 
   // ── ⑤ 降级验证：完全认不出的访问不丢 ──
   console.log("\n⑤ 降级：认不出作品时历史不丢");
-  const orphan = await visit(
+  const orphan = visit(
     {
       url: "https://unknown.example.com/v/9",
       title: "未知页",
@@ -127,28 +126,31 @@ async function runTests() {
     day2 + 3600e3,
   );
   assert(
-    !orphan.dropped,
-    "没有适配器规则的域名不会被 evaluateIncoming 丢弃（域名过滤在扩展那一层）",
+    orphan.action === "insert",
+    "没有适配器规则的域名不会被闸门丢弃（域名过滤在扩展那一层）",
   );
   assert(orphan.work === null, "也归不到作品——这是降级路径");
   assert(
     store.getRecordById(`r-unknown.example.com-${day2 + 3600e3}`) !== null,
     "记录照样入库，历史一条不少",
   );
-  // 但如果它在 watchlist 里却没有可用键，就会降级成「无作品」的记录
-  const W2 = [{ domain: "unknown.example.com", label: "未知", color: "#fff" }];  const res = evaluateIncoming(
-    { url: "https://unknown.example.com/v/9", title: "", domain: "unknown.example.com", matchedRule: "unknown.example.com", tabId: 9, timestamp: day2 },
-    W2,
-    () => null,
+  // 登记过、但没有闸门规则也没有捕获组的站点：照常插入，只是归不到作品
+  store.addWatchlist({ domain: "unknown.example.com", label: "未知", color: "#fff" });
+  const deg = visit(
+    {
+      id: "orphan-1",
+      url: "https://unknown.example.com/v/10",
+      title: "",
+      description: "",
+      ogImage: "",
+      domain: "unknown.example.com",
+      matchedRule: "unknown.example.com",
+      tabId: 9,
+    },
+    day2,
   );
-  assert(res.action === "insert", "无规则时照常插入");
-  const deg = store.recordWorkVisit({ keys: res.keys, title: "", timestamp: day2 });
+  assert(deg.action === "insert", "无规则时照常插入");
   assert(deg.work === null, "归不到作品");
-  store.insertRecord({
-    ...res.record,
-    id: "orphan-1",
-    workId: deg.work ? deg.work.id : null,
-  });
   assert(
     store.getRecordById("orphan-1") !== null,
     "记录仍然存在——降级而非丢弃",
