@@ -89,6 +89,9 @@ class RecordStore {
     for (const col of cols) {
       try { this.db.run(`ALTER TABLE records ADD COLUMN ${col}`); } catch (e) {}
     }
+    // workId 由上面的迁移补上，所以索引建在迁移之后。
+    // 作品视图的 join 与「删掉没访问的作品」都按 records.workId 找行。
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_records_work ON records(workId)`);
 
     // ── 作品：跨站融合的唯一落点（docs/adr/0007） ──
     // works 用代理键：不存在一个跨站通用的单一身份字段。
@@ -568,7 +571,8 @@ class RecordStore {
       ],
     );
     const full = this.getRecordById(record.id);
-    this._emit("recordAdded", full);
+    // 广播形状要与扩展/渲染进程约定的一致：记录在 record 字段下。
+    this._emit("recordAdded", { record: full });
     return full;
   }
 
@@ -591,6 +595,7 @@ class RecordStore {
     const placeholders = ids.map(() => "?").join(",");
     const deleted = this._dbAll(`SELECT * FROM records WHERE id IN (${placeholders})`, ids);
     this._dbRun(`DELETE FROM records WHERE id IN (${placeholders})`, ids);
+    this._sweepOrphanWorks();
     this._emit("recordsCleared");
     return { deletedCount: deleted.length, deletedRecords: deleted };
   }
@@ -617,30 +622,9 @@ class RecordStore {
     return record;
   }
 
-  /** Insert a record the agent added: pinned and scored 1. Returns the row. */
-  addAgentRecord(record) {
-    const ts = record.timestamp || now();
-    this._dbRun(
-      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, '', '', '')",
-      [
-        record.id,
-        record.url,
-        record.title || "",
-        record.domain,
-        record.matchedRule,
-        record.tabId || 0,
-        ts,
-        ts,
-        ts,
-      ],
-    );
-    const full = this.getRecordById(record.id);
-    this._emit("recordAdded", { record: full });
-    return full;
-  }
-
   clearRecords() {
     this._dbRun("DELETE FROM records");
+    this._sweepOrphanWorks();
     this._emit("recordsCleared");
   }
 
@@ -719,6 +703,9 @@ class RecordStore {
         workId,
         edition,
       });
+      // 这次回访把记录从旧作品上挪走了（适配器改版、或认出来的变成了另一部）：
+      // 旧作品可能就此没有访问，跟着清掉，不留孤儿分数。
+      if (existing.workId && existing.workId !== workId) this._sweepOrphanWorks();
       return { action: "update", record, ...outcome };
     }
 
@@ -763,6 +750,23 @@ class RecordStore {
 
   // ── Works（作品） ────────────────────────────────────────────────────────────
   // 作品是跨站融合的唯一落点；records 降为访问事件。见 docs/adr/0007。
+
+  /**
+   * 删掉已经没有任何访问的作品——删除访问不该留下孤儿作品分数。
+   * 写入路径（recordVisit / backfillWorks）必然给每部作品挂上至少一条访问，
+   * 所以没有访问的作品只可能来自访问被删除，清掉它不丢任何历史。
+   * 作品的键与歧义记录随作品一起清掉，不留悬空引用。
+   * 条件写成子查询而不是先取 id：clearRecords 可能面对上万部作品，不走参数列表。
+   */
+  _sweepOrphanWorks() {
+    const orphan = `SELECT w.id FROM works w
+      WHERE NOT EXISTS (SELECT 1 FROM records r WHERE r.workId = w.id)`;
+    this._dbRun(`DELETE FROM work_keys WHERE workId IN (${orphan})`);
+    this._dbRun(
+      `DELETE FROM work_ambiguities WHERE workA IN (${orphan}) OR workB IN (${orphan})`,
+    );
+    this._dbRun(`DELETE FROM works WHERE id IN (${orphan})`);
+  }
 
   getWork(id) {
     return this._dbGet("SELECT * FROM works WHERE id = ?", [id]) || null;
@@ -1380,11 +1384,15 @@ class RecordStore {
     };
   }
 
-  // Named write operations the agent tools may use. Deliberately narrow:
-  // no SQL handle, no event emission entry point.
+  // Named write operations the agent tools may use. Deliberately narrow: the
+  // only way in is these named operations; there is no SQL handle here.
   getAgentWriteStore() {
     const self = this;
     return {
+      // agent 新建的访问走的是浏览器上报那条通道本身，不是它的副本。
+      recordVisit(incoming) {
+        return self.recordVisit(incoming);
+      },
       deleteRecords(ids) {
         return self.deleteRecords(ids);
       },
@@ -1393,9 +1401,6 @@ class RecordStore {
       },
       updateRecordScore(id, score) {
         return self.updateRecordScore(id, score);
-      },
-      addAgentRecord(record) {
-        return self.addAgentRecord(record);
       },
     };
   }
