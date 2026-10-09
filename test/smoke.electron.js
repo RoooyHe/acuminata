@@ -225,7 +225,17 @@ async function reportVisitOverWs() {
   const exported = inbox.filter((m) => m.type === "exportData").pop();
   if (!exported) return { count: 0, workId: null };
   const mine = (exported.records || []).filter((r) => r.id === visit.id);
-  return { count: mine.length, workId: mine[0] ? mine[0].workId : null };
+  // 一次上报只该产生一条 record 广播，且带客户端读的 record 与健康度（issue #53）。
+  const recordMsgs = inbox.filter(
+    (m) => m.type === "recordAdded" || m.type === "recordUpdated",
+  );
+  return {
+    count: mine.length,
+    workId: mine[0] ? mine[0].workId : null,
+    recordBroadcasts: recordMsgs.length,
+    recordHasField: !!(recordMsgs[0] && recordMsgs[0].record),
+    recordHasHealth: !!(recordMsgs[0] && recordMsgs[0].health),
+  };
 }
 
 /**
@@ -591,6 +601,13 @@ async function main() {
     !!wsVisit.workId,
     "WS 上报的那条访问没有归到作品（workId 为空）——一次调用要把作品归属一起做完",
   );
+  // issue #53：一次上报一条 record 广播，且信封带客户端读的具名 record 与健康度。
+  expect(
+    wsVisit.recordBroadcasts === 1,
+    "一次上报产生了 " + wsVisit.recordBroadcasts + " 条 record 广播（应当只有 1 条）",
+  );
+  expect(wsVisit.recordHasField, "record 广播没有带 record 字段");
+  expect(wsVisit.recordHasHealth, "record 广播没有带健康度（应当随这一条广播一起）");
   // AC：一条新访问不再触发全量重拉（stats / works:page / health / unattributed /
   // 打开中的详情）。广播已带够数据，这次访问不该产生任何渲染器→主进程的 invoke。
   expect(

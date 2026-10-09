@@ -22,13 +22,15 @@ const { uuid, now } = require("./ids");
 const { toJson } = require("./json-column");
 
 class VisitStore {
-  constructor(db, { emit, sites, works, settings, adapters } = {}) {
+  constructor(db, { emit, sites, works, settings, adapters, adapterHealth } = {}) {
     this.db = db;
     this.emit = emit || (() => {});
     this.sites = sites;
     this.works = works;
     this.settings = settings;
     this.adapters = adapters;
+    // 适配器健康度的计数器由 RecordStore 注入（没有时所有健康度相关调用都是空操作）。
+    this.adapterHealth = adapterHealth || null;
   }
 
   static schema(db) {
@@ -228,6 +230,23 @@ class VisitStore {
   /** 未归属访问的总数（作品视图的「未归类」分组要显示它）。 */
   getUnattributedCount() {
     return this.db.get("SELECT COUNT(*) as total FROM records WHERE workId IS NULL").total;
+  }
+
+  /**
+   * 健康度快照：未归属数 + 每适配器命中情况 + 歧义作品。与 `works:health` IPC 同形，
+   * 供渲染层与这次访问的广播共用一段就地更新。
+   */
+  getHealth() {
+    return {
+      unattributedCount: this.getUnattributedCount(),
+      adapters: this.adapterHealth ? this.adapterHealth.snapshot() : [],
+      ambiguousWorks: this.works.getAmbiguousWorks(),
+    };
+  }
+
+  /** 一次访问记一次适配器健康度（列表页不算：它是适配器声明过的正常页面）。 */
+  _noteHealth(result, domain) {
+    if (this.adapterHealth) this.adapterHealth.noteVisit(result, domain);
   }
 
   /**
@@ -436,7 +455,8 @@ class VisitStore {
     // 3. 闸门 + 解析：同一个正则既决定「这一页算不算作品页」，也抠出作品身份
     if (group.rules.length > 0 && !matchesRegex(group.rules, incoming.title, incoming.url)) {
       // 这一页不是作品页，丢弃是有意的。但若适配器写错（正则改版失效），
-      // 这里会静默丢历史——调用方必须统计 no-rule-match 并告警（docs/adr/0003）。
+      // 这里会静默丢历史——调用方靠健康度统计看到它（docs/adr/0003）。
+      this._noteHealth({ action: "drop", reason: "no-rule-match" }, incoming.domain);
       return { action: "drop", reason: "no-rule-match" };
     }
 
@@ -453,7 +473,9 @@ class VisitStore {
 
     // 6. 同一标签页 60s 内重报：还是那一次访问，什么都不做（不落库也不广播）
     if (isRepeatVisit(existing, incoming, ts)) {
-      return { action: "ignore", keys, extracted, adapter, parsed };
+      const ignored = { action: "ignore", keys, extracted, adapter, parsed };
+      this._noteHealth(ignored, incoming.domain);
+      return ignored;
     }
 
     // 7. 访问层当日计分：同路径已有访问 → 更新那一张，不新建
@@ -494,6 +516,7 @@ class VisitStore {
       // 这次回访把记录从旧作品上挪走了（适配器改版、或认出来的变成了另一部）：
       // 旧作品可能就此没有访问，跟着清掉，不留孤儿分数。
       if (existing.workId && existing.workId !== workId) this.works.sweepOrphans();
+      this._noteHealth({ ...outcome, action: "update" }, incoming.domain);
       this._emitVisit({
         type: "recordUpdated",
         record,
@@ -523,6 +546,7 @@ class VisitStore {
       },
       { emit: false },
     );
+    this._noteHealth({ ...outcome, action: "insert" }, incoming.domain);
     this._emitVisit({ type: "recordAdded", record, workId });
     return { action: "insert", record, ...outcome };
   }
@@ -542,6 +566,8 @@ class VisitStore {
       previousWork: moved ? this.works.getWorkRow(previousWorkId) : null,
       previousWorkId: moved ? previousWorkId : null,
       stats: this.getStats(),
+      // 健康度随这唯一一条访问广播一起走：丢弃/去重没有这条广播时才单独推。
+      health: this.getHealth(),
     });
   }
 

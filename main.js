@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const WebSocket = require("ws");
 const { RecordStore } = require("./agent/record-store");
+const { toClientMessage } = require("./agent/broadcast");
 const { ADAPTER_DIR } = require("./agent/adapters");
 const { createIPCDispatcher } = require("./agent/ipc-dispatcher");
 const { createExecuteTool } = require("./agent/tools/orchestrator");
@@ -15,7 +16,6 @@ const {
 } = require("./agent/tools");
 const { agentLoop, executeApprovedActions } = require("./agent/executor");
 const { createAIProviders } = require("./agent/providers");
-const { createAdapterHealth } = require("./agent/adapter-health");
 const { listFetchTargets, collectListEntries } = require("./agent/adapter");
 const { reflectPrompt } = require("./agent/analysis-pipeline");
 const { applyReflection } = require("./agent/reflect");
@@ -105,10 +105,8 @@ async function init() {
     fs.mkdirSync(USER_ADAPTER_DIR, { recursive: true });
   } catch (e) { /* 建不出来就当没有用户适配器 */ }
   store = new RecordStore(DB_PATH, (type, data) => {
-    broadcastToExtensions({ type, ...data });
+    broadcastToExtensions(toClientMessage(type, data));
   }, { adapterDirs: [ADAPTER_DIR, USER_ADAPTER_DIR] });
-  // 适配器健康度按已加载的适配器初始化：从未命中的也能在界面上被看见。
-  adapterHealth = createAdapterHealth(store.getAdapters());
 
   await store.init();
 
@@ -146,7 +144,8 @@ async function init() {
   createIPCDispatcher(ipcMain, store, {
     providers: aiProviders,
     executeTool,
-    getAdapterHealth: () => adapterHealth.snapshot(),
+    // IPC 的 works:health 要的是适配器行本身；访问广播里带走整份快照。
+    getAdapterHealth: () => store.getHealthSnapshot().adapters,
     fetchCandidates: fetchCandidates,
     // agent 执行进度不是 store 的状态变更，走传输层自己的广播，不问 store 要事件。
     // ponytail: executor 交来整条事件对象，这里按封装前的线上形状（整条对象当 type）
@@ -209,17 +208,8 @@ function startExtensionServer() {
 // ── 适配器健康度 ──────────────────────────────────────────────────────────────
 // 区分「这一页不是作品页」（正常丢弃）与「适配器已失效」（会静默丢整段历史）。
 // 见 docs/adr/0003 的后果条：用户自己写适配器，改版是常态，静默失效是头号故障。
-// 在 init() 里按已加载的适配器建，故用 let。
-let adapterHealth;
-
-// 未归属数 + 每适配器命中情况 + 歧义作品列表：健康度视图读它，一条访问的广播也带它。
-function healthSnapshot() {
-  return {
-    unattributedCount: store.getUnattributedCount(),
-    adapters: adapterHealth.snapshot(),
-    ambiguousWorks: store.getAmbiguousWorks(),
-  };
-}
+// 计数器由 RecordStore 持有：命中的访问随那唯一一条 record 广播带上快照，
+// 丢弃/去重没有 record 广播，下面的分支单独推一份（一条访问一条广播）。
 
 function handleExtensionMessage(ws, msg) {
   switch (msg.type) {
@@ -227,17 +217,16 @@ function handleExtensionMessage(ws, msg) {
       // 一条访问走一条通道：列表页 → 闸门 → 身份键 → 同组同路径去重 → 当日计分 →
       // 作品归属 → 落库，全部在 store 内一次判完（docs/adr/0002）。
       // store.recordVisit 自己发出那唯一一条 recordAdded/recordUpdated 广播
-      // （带访问 + 作品行 + 统计），这里只补适配器健康度。
+      // （带访问 + 作品行 + 统计 + 健康度），这里只在没有那条广播时补健康度。
       const result = store.recordVisit(msg);
-      const dropped = result.action === "drop";
-      // 列表页是适配器声明过的正常页面，不算适配器失效（ADR-0005）。
-      if (result.reason !== "list-page") adapterHealth.noteVisit(result, msg.domain);
-      // 命中与丢弃都各记一次，健康度独立于 recordAdded 广播推给界面。
-      broadcastToExtensions({
-        type: "adapterHealthUpdated",
-        health: healthSnapshot(),
-      });
-      if (dropped || result.action === "ignore") return;
+      if (result.action === "drop" || result.action === "ignore") {
+        // 丢弃/去重都不产生 record 广播，健康度得自己推一次，
+        // 否则「连续丢弃且从未命中」的站点要等下一次无关更新才看得见。
+        broadcastToExtensions(
+          toClientMessage("adapterHealthUpdated", { health: store.getHealthSnapshot() }),
+        );
+        return;
+      }
 
       // 身份键指向多部作品：按 ADR-0002 那是「误合」风险，不静默合并，
       // 只报到日志等用户裁决（记录已经照常落库）。
