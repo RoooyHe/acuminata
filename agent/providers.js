@@ -278,10 +278,10 @@ function createAIProviders(getConfig, requestFn) {
   }
 
   async function callOpenAITools(messages, tools) {
-    const endpoint = (cfg().endpoint || "").replace(/\/+$/, "");
+    const base = (cfg().endpoint || "").replace(/\/+$/, "").replace(/\/v1$/, "");
     const apiKey = cfg().apiKey || "";
     const model = cfg().model || "";
-    const url = endpoint + "/v1/chat/completions";
+    const url = base + "/v1/chat/completions";
     const msgs =
       messages[0]?.role === "system"
         ? messages
