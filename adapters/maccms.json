@@ -1,0 +1,19 @@
+{
+  "_note": "按 docs/adapters/template.md 写成，用真实抓下来的两页验证（test/fixtures/maccms-*.html）。平台级适配器：只依赖签名、URL/属性模式与 meta，不锚 class —— 两个站的 class 完全不同。",
+  "name": "MacCMS",
+  "detect": { "pageGlobal": "maccms" },
+  "collect": [
+    { "field": "keywords", "selector": "meta[name='keywords']", "attr": "content" },
+    {
+      "field": "cover",
+      "selector": ["img[data-original*='/upload/vod/']", "img[src*='/upload/vod/']"],
+      "attr": ["data-original", "data-src", "src"]
+    }
+  ],
+  "parse": {
+    "code": {
+      "from": ["cover", "keywords", "url", "title"],
+      "regex": "/upload/vod/[0-9-]+/(?<code>[0-9a-f]{32})\\."
+    }
+  }
+}
