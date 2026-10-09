@@ -803,6 +803,113 @@ async function runTests() {
     );
   }
 
+  // ── 一条访问一条广播：带作品行与统计，供界面就地更新（issue #24） ──
+  console.log("\nTest: 一次访问的广播携带就地更新所需的全部数据");
+  {
+    const events = [];
+    const s = new RecordStore(TEST_DB, (type, payload) => events.push({ type, ...payload }));
+    await s.init();
+    s.addWatchlist({
+      domain: "broadcast.example",
+      label: "广播站",
+      color: "#fff",
+      regexFilter: "/v/(?<code>[0-9]+)",
+      regexTarget: "url",
+    });
+    events.length = 0;
+    s.recordVisit({
+      id: "b1",
+      url: "https://broadcast.example/v/1",
+      title: "广播作品",
+      domain: "broadcast.example",
+      matchedRule: "broadcast.example",
+      tabId: 1,
+      timestamp: Date.now(),
+    });
+    const added = events.filter((e) => e.type === "recordAdded");
+    assert(added.length === 1, "一次访问只发一条 recordAdded（不再重复）");
+    assert(added[0].record.id === "b1", "广播带访问本身");
+    assert(
+      added[0].work && added[0].work.id === added[0].record.workId,
+      "广播带该访问所属作品的列表行",
+    );
+    assert(
+      added[0].work.visitCount === 1 &&
+        added[0].work.sourceCount === 1 &&
+        added[0].work.sites.join(",") === "broadcast.example",
+      "作品行带聚合字段，渲染层无需回头拉页",
+    );
+    assert(
+      added[0].stats && added[0].stats.total === 1,
+      "广播带最新统计",
+    );
+
+    // 行与 getWorksPage 的结果必须同形同值。
+    const pageRow = s.getWorksPage(1, 10).works.find((w) => w.id === added[0].work.id);
+    const single = s.getWorkRow(added[0].work.id);
+    assert(
+      JSON.stringify(single) === JSON.stringify(pageRow),
+      "getWorkRow 与列表页的行完全一致",
+    );
+    assert(s.getWorkRow("nonexistent") === null, "未知作品没有行");
+
+    // 同一路径回访（另一天）：仍是唯一一条广播，类型为 recordUpdated。
+    events.length = 0;
+    s.recordVisit({
+      id: "b1",
+      url: "https://broadcast.example/v/1",
+      title: "广播作品",
+      domain: "broadcast.example",
+      matchedRule: "broadcast.example",
+      tabId: 1,
+      timestamp: Date.now() + 26 * 3600 * 1000,
+    });
+    const updated = events.filter((e) => e.type === "recordUpdated");
+    assert(updated.length === 1, "回访也只发一条 recordUpdated");
+    assert(
+      updated[0].work && updated[0].stats,
+      "回访广播同样带作品行与统计",
+    );
+
+    // 换归属：适配器改身份键，同一条访问从旧作品挪到新作品。
+    // 旧作品行也得跟着更新/删掉，否则列表会留着一条过时的行。
+    events.length = 0;
+    s.addWatchlist({
+      domain: "moved.example",
+      label: "移动站",
+      color: "#fff",
+      regexFilter: "(?<code>[A-Z]+-[0-9]+)",
+      regexTarget: "title",
+    });
+    events.length = 0;
+    s.recordVisit({
+      id: "m1",
+      url: "https://moved.example/p",
+      title: "OLD-1 页",
+      domain: "moved.example",
+      matchedRule: "moved.example",
+      tabId: 1,
+      timestamp: Date.now(),
+    });
+    const oldWorkId = events.find((e) => e.type === "recordAdded").work.id;
+    events.length = 0;
+    s.recordVisit({
+      id: "m1",
+      url: "https://moved.example/p",
+      title: "NEW-2 页",
+      domain: "moved.example",
+      matchedRule: "moved.example",
+      tabId: 1,
+      timestamp: Date.now() + 26 * 3600 * 1000,
+    });
+    const movedEvent = events.find((e) => e.type === "recordUpdated");
+    assert(movedEvent.previousWorkId === oldWorkId, "广播指出访问离开的旧作品");
+    assert(
+      movedEvent.previousWork === null && s.getWork(oldWorkId) === null,
+      "旧作品已无访问被清掉，广播据此删行",
+    );
+  }
+
   console.log("\n✅ All RecordStore tests passed!");
   process.exit(0);
 }

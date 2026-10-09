@@ -28,6 +28,15 @@ function now() {
   return Date.now();
 }
 
+// 作品列表行的聚合 SELECT：getWorksPage 与 getWorkRow 共用，行形状只此一处。
+const WORK_ROW_SELECT = `SELECT w.*,
+        COUNT(r.id) AS visitCount,
+        COALESCE(MAX(r.timestamp), 0) AS lastVisitAt,
+        COUNT(DISTINCT r.matchedRule) AS sourceCount,
+        COALESCE(GROUP_CONCAT(DISTINCT r.matchedRule), '') AS siteRules
+ FROM works w
+ LEFT JOIN records r ON r.workId = w.id`;
+
 // ── Constructor ──────────────────────────────────────────────────────────────
 
 class RecordStore {
@@ -546,7 +555,7 @@ class RecordStore {
     return this._dbAll(sql, params);
   }
 
-  insertRecord(record) {
+  insertRecord(record, opts = {}) {
     const nowTs = now();
     this._dbRun(
       "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId, edition, dwellTime) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?, ?, ?)",
@@ -569,11 +578,12 @@ class RecordStore {
     );
     const full = this.getRecordById(record.id);
     // 广播形状要与扩展/渲染进程约定的一致：记录在 record 字段下。
-    this._emit("recordAdded", { record: full });
+    // recordVisit 会压掉这次广播，改发一条带作品与统计的（见方法末尾）。
+    if (opts.emit !== false) this._emit("recordAdded", { record: full });
     return full;
   }
 
-  updateRecord(id, updates) {
+  updateRecord(id, updates, opts = {}) {
     const sets = [];
     const params = [];
     for (const [key, val] of Object.entries(updates)) {
@@ -583,7 +593,7 @@ class RecordStore {
     params.push(id);
     this._dbRun(`UPDATE records SET ${sets.join(", ")} WHERE id = ?`, params);
     const record = this.getRecordById(id);
-    if (record) this._emit("recordUpdated", record);
+    if (record && opts.emit !== false) this._emit("recordUpdated", { record });
     return record;
   }
 
@@ -603,7 +613,7 @@ class RecordStore {
       [pinned ? 1 : 0, score, now(), id],
     );
     const record = this.getRecordById(id);
-    if (record) this._emit("recordUpdated", record);
+    if (record) this._emit("recordUpdated", { record });
     return record;
   }
 
@@ -699,10 +709,16 @@ class RecordStore {
         updatedAt: scored.newUpdatedAt,
         workId,
         edition,
-      });
+      }, { emit: false });
       // 这次回访把记录从旧作品上挪走了（适配器改版、或认出来的变成了另一部）：
       // 旧作品可能就此没有访问，跟着清掉，不留孤儿分数。
       if (existing.workId && existing.workId !== workId) this._sweepOrphanWorks();
+      this._emitVisit({
+        type: "recordUpdated",
+        record,
+        workId,
+        previousWorkId: existing.workId,
+      });
       return { action: "update", record, ...outcome };
     }
 
@@ -719,8 +735,27 @@ class RecordStore {
       ogImage: incoming.ogImage || "",
       workId,
       edition,
-    });
+    }, { emit: false });
+    this._emitVisit({ type: "recordAdded", record, workId });
     return { action: "insert", record, ...outcome };
+  }
+
+  /**
+   * 一条访问落库后的**唯一**一次广播：访问、它所属作品的汇总行、被它离开的旧作品
+   * （换了归属时）、以及最新的统计。渲染层靠这些就地更新统计、作品行与打开中的详情，
+   * 不再回头拉整页。
+   * ponytail: 只带受影响的作品行；渲染层并进已加载页，跨页重排留到下一次翻页。
+   */
+  _emitVisit({ type, record, workId, previousWorkId }) {
+    const moved = previousWorkId && previousWorkId !== workId;
+    this._emit(type, {
+      record,
+      work: workId ? this.getWorkRow(workId) : null,
+      // 旧作品还在就带新行，已经被清掉（无访问）则为 null；渲染层据此删行。
+      previousWork: moved ? this.getWorkRow(previousWorkId) : null,
+      previousWorkId: moved ? previousWorkId : null,
+      stats: this.getStats(),
+    });
   }
 
   /**
@@ -937,13 +972,7 @@ class RecordStore {
         : "w.score DESC, lastVisitAt DESC";
 
     const rows = this._dbAll(
-      `SELECT w.*,
-              COUNT(r.id) AS visitCount,
-              COALESCE(MAX(r.timestamp), 0) AS lastVisitAt,
-              COUNT(DISTINCT r.matchedRule) AS sourceCount,
-              COALESCE(GROUP_CONCAT(DISTINCT r.matchedRule), '') AS siteRules
-       FROM works w
-       LEFT JOIN records r ON r.workId = w.id
+      `${WORK_ROW_SELECT}
        ${where}
        GROUP BY w.id
        ORDER BY ${orderBy}
@@ -951,13 +980,27 @@ class RecordStore {
       [...filterParams, pageSize, offset],
     );
 
-    const works = rows.map((row) => {
-      const sites = row.siteRules ? row.siteRules.split(",") : [];
-      delete row.siteRules;
-      return { ...row, sites };
-    });
+    return { works: rows.map((row) => this._mapWorkRow(row)), total, page, pageSize };
+  }
 
-    return { works, total, page, pageSize };
+  /**
+   * 单部作品的列表行（与 getWorksPage 的行同形），供一条访问落库后就地更新列表用。
+   * @param {string} workId
+   * @returns {Object|null}
+   */
+  getWorkRow(workId) {
+    const row = this._dbGet(
+      `${WORK_ROW_SELECT} WHERE w.id = ? GROUP BY w.id`,
+      [workId],
+    );
+    return row ? this._mapWorkRow(row) : null;
+  }
+
+  /** 把聚合查询的一行转成列表行（站点列拆成数组）。 */
+  _mapWorkRow(row) {
+    const sites = row.siteRules ? row.siteRules.split(",") : [];
+    delete row.siteRules;
+    return { ...row, sites };
   }
 
   /**
@@ -1211,7 +1254,7 @@ class RecordStore {
       ],
     );
     const full = this.getRecordById(record.id);
-    this._emit("recordAdded", full);
+    this._emit("recordAdded", { record: full });
     return full;
   }
 
