@@ -54,6 +54,8 @@ Extension files:
 
 When mode changes (SET_MODE message), `background.ts` connects or disconnects WS immediately.
 
+The extension does not parse pages itself: the desktop pushes the **adapters** in the `init` message, and the extension injects `shared/page-collect.js`'s `collectPage` to report the **page signature** (`pageSignature`) plus the fields each adapter's `collect` rules found (`pageFields`). The desktop alone decides which adapter claims the page (`detectBySignature`), so a MacCMS site gets a content-code identity key even when the user wrote no regex. `agent/adapter.test.js` and `agent/maccms-signature.e2e.test.js` run that same injected function against the real page fixtures.
+
 ## Data model (SQLite)
 
 Tables: `records`, `works`, `work_keys`, `watchlist`, `settings`, `recommendations`.

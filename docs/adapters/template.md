@@ -3,7 +3,7 @@
 一个适配器 = 一个 JSON 文件 = 一个平台（含它的镜像）。放在 `adapters/` 下。
 范例就是内置的那个：`adapters/maccms.json`。
 
-> 加载目录、以及在程序启动时接上，是 `agent/adapters.js` 的 `loadAdapters()`；今天还没有调用方（见下面「实现状态」）。
+> 加载目录、以及在程序启动时接上，是 `agent/adapters.js` 的 `loadAdapters()`；`RecordStore` 启动时读一次，写入路径与推给扩展的那一份是同一份（见下面「实现状态」）。
 
 适配器由**用户**编写，Acuminata 只定义这个格式——除了内置的平台适配器：MacCMS 也是 `adapters/maccms.json` 里的一个普通文件，与用户写的**同一种格式、同一条管道**，没有特权路径（`docs/adr/0006-adapters-by-platform.md`）。
 
@@ -194,7 +194,8 @@
 
 ## 实现状态
 
-这个格式由 `agent/adapter.js`（detect / collect / parse）、`agent/adapters.js`（加载）读，
+这个格式由 `agent/adapter.js`（解析 + 组合）、`agent/adapters.js`（加载）、
+`shared/page-collect.js`（detect / collect，要 DOM 的那一半）读，
 `agent/adapter.test.js` 用真实抓下来的页面夹具验证。
 
 | 已读 | 未读（写了但没人读，别用） |
@@ -202,4 +203,15 @@
 | `detect.pageGlobal`、`collect`（含 `many`、选择器/属性有序备选）、`parse`（`from` / 命名捕获组） | `domains`、`{label:"主演"}` 与 `attr:"a@text"`（按标签文本定位）、`list` 列表页 |
 
 `loadAdapters()` 能读 `adapters/` 目录（内置与用户写在同一个目录、同一段代码，没有特权路径），
-但**还没有谁在启动时调它**：把适配器接进访问写入路径是 #26，把用户适配器接上并在健康度里报告失效是 #28。
+`RecordStore` 启动时读一次，交给两处：
+
+- **写入路径**（`agent/cluster.js` 的 `identityKeysFor`）：认平台 → `parse` → 作品身份键
+- **扩展**（`init` 消息推过去）：拿它去页面上 `collect`
+
+detect 与 collect 要 DOM，所以住在 `shared/page-collect.js`：扩展用
+`chrome.scripting.executeScript` 把 `collectPage` 整段注入页面，桌面端测试用**同一个函数**
+跑真实页面夹具。**认平台由桌面端决定**（`detectBySignature`）——扩展只回传页面签名
+（`pageSignature`）与各适配器 collect 抽到的字段（`pageFields`），判定只有一处。
+
+仍未接上：把用户适配器接上、并在健康度里报告失效是 #28；采集字段落库、
+改一次适配器能重跑全历史是 #27。

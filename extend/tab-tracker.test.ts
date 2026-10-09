@@ -9,6 +9,7 @@ const tabListeners = {
 }
 
 let scriptInjectResults: unknown[] = []
+let scriptInjectArgs: unknown[][] = []
 
 const mockChrome = {
   tabs: {
@@ -26,7 +27,10 @@ const mockChrome = {
     },
   },
   scripting: {
-    executeScript: async () => scriptInjectResults,
+    executeScript: async (opts: { args?: unknown[] }) => {
+      scriptInjectArgs.push(opts?.args || [])
+      return scriptInjectResults
+    },
   },
   storage: {
     local: {
@@ -41,6 +45,11 @@ const mockChrome = {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 import { TabTracker, type RecordEvent, type DwellTimeEvent } from "./tab-tracker"
+import type { Adapter } from "../shared/types"
+
+const ADAPTERS: Adapter[] = [
+  { name: "MacCMS", file: "maccms.json", detect: { pageGlobal: "maccms" } },
+]
 
 function createTracker() {
   const matchesWatchlist = (url: string) => {
@@ -50,7 +59,7 @@ function createTracker() {
   const extractDomain = (url: string) => {
     try { return new URL(url).hostname.replace(/^www\./, "") } catch { return null }
   }
-  return new TabTracker({ matchesWatchlist, extractDomain })
+  return new TabTracker({ matchesWatchlist, extractDomain, getAdapters: () => ADAPTERS })
 }
 
 function assert(condition: boolean, message: string) {
@@ -121,7 +130,7 @@ async function runTests() {
   recordFired = false
   tracker.start()
   tracker.onRecord(() => { recordFired = true })
-  tracker.handleUrl("https://www.example.com/video/2", 2, "Duplicate")
+  await tracker.handleUrl("https://www.example.com/video/2", 2, "Duplicate")
   assert(recordFired, "First visit creates record")
   recordFired = false
   await tracker.handleUrl("https://www.example.com/video/2", 2, "Duplicate")
@@ -170,7 +179,15 @@ async function runTests() {
 
   // Test 10: Script injection updates record
   console.log("\nTest: Script injection updates record")
-  scriptInjectResults = [{ result: { description: "Test description", ogImage: "https://example.com/og.jpg" } }]
+  scriptInjectArgs = []
+  scriptInjectResults = [{
+    result: {
+      description: "Test description",
+      ogImage: "https://example.com/og.jpg",
+      pageSignature: ["maccms", "ewave_config"],
+      pageFields: { "maccms.json": { cover: "https://x.com/upload/vod/20260101-1/c0a55b31c915cab3d80e9863f54f2ee0.webp" } },
+    },
+  }]
   recordFired = false
   let injectedRecord: RecordEvent["data"] | null = null
   tracker.start()
@@ -182,6 +199,12 @@ async function runTests() {
   assert(recordFired, "Record event fired after injection")
   assert(injectedRecord!.description === "Test description", "Description injected")
   assert(injectedRecord!.ogImage === "https://example.com/og.jpg", "OG image injected")
+  assert(injectedRecord!.pageSignature?.includes("maccms") === true, "页面签名随访问回传")
+  assert(
+    typeof injectedRecord!.pageFields?.["maccms.json"].cover === "string",
+    "适配器 collect 抽到的字段随访问回传",
+  )
+  assert(scriptInjectArgs[0][0] === ADAPTERS, "桌面端推过来的适配器被带进页面采集")
   tracker.stop()
   scriptInjectResults = []
 
