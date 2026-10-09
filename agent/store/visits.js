@@ -19,12 +19,13 @@ const {
 const { uuid, now } = require("./ids");
 
 class VisitStore {
-  constructor(db, { emit, sites, works, settings } = {}) {
+  constructor(db, { emit, sites, works, settings, adapters } = {}) {
     this.db = db;
     this.emit = emit || (() => {});
     this.sites = sites;
     this.works = works;
     this.settings = settings;
+    this.adapters = adapters;
   }
 
   static schema(db) {
@@ -381,7 +382,7 @@ class VisitStore {
     }
 
     // 3. 作品身份键。拿不到任何键也照常往下走，只是后面归不到作品（降级而非丢弃）。
-    const { extracted, keys } = identityKeysFor(incoming, watchlist, group.rules);
+    const { extracted, keys } = identityKeysFor(incoming, watchlist, group.rules, this.adapters);
 
     // 4. 同组同路径去重：镜像上的同一个页面是同一次访问
     const existing = this._findVisitByPath(group.domains, extractPath(incoming.url));

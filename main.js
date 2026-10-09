@@ -170,7 +170,7 @@ function startExtensionServer() {
     console.log("[Server] Extension connected");
     extensionClients.add(ws);
 
-    ws.send(JSON.stringify({ type: "init", watchlist: store.getWatchlist(), enabled: store.getEnabled() }));
+    ws.send(JSON.stringify({ type: "init", watchlist: store.getWatchlist(), enabled: store.getEnabled(), adapters: store.getAdapters() }));
 
     ws.on("message", (data) => {
       try {

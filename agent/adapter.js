@@ -8,113 +8,46 @@
  *   collect —— 从 DOM 抽出具名字段；选择器与属性都是**有序备选**，第一个命中的胜出
  *   parse   —— 用命名捕获组正则从字段里抠身份字段；`from` 也是有序备选
  *
+ * detect 与 collect 要 DOM，所以它们住在 `shared/page-collect.js`——
+ * 那一份同时被扩展注入页面（采集）与测试用真实页面夹具跑（验证），
+ * 桌面端只负责 parse（已存字段的纯函数，改一次适配器能重跑全历史）。
+ *
  * 抠出来的只是「编号」这个形状，归一化与身份键由 identity.js 说了算——同一个
  * 编号在不同适配器下必须得到同一个结果，所以归一化不能由适配器各写一遍。
  *
  * 内置适配器与用户适配器走的就是这条管道：内置的也是 `adapters/` 下的一个 JSON
  * 文件，由同一个 loader 读进来，没有特权路径（ADR-0006）。
  *
- * 这里只用 `root.querySelectorAll` 与 `RegExp`，没有 Node API，所以同一份代码
- * 在扩展（页面里）与测试（linkedom 解析真实页面夹具）里都能跑。
- *
  * ponytail: 模板里的 `{label:"主演"}` / `attr:"a@text"`（按标签文本定位）与
  * `list` 列表页尚未实现——内置 MacCMS 适配器用不到它们，`list` 归后续的候选（#30）。
  */
 
 const { extractKeys } = require("./identity");
+const { collectPage, detectBySignature } = require("../shared/page-collect");
 
-/** 页面签名：内联脚本里出现过的 `var X=` 全局名。MacCMS 两站都靠 `var maccms={...}` 报出平台。 */
-function pageGlobals(root) {
-  const names = new Set();
-  for (const script of root.querySelectorAll("script")) {
-    const text = script.textContent || "";
-    for (const m of text.matchAll(/var\s+([A-Za-z_$][\w$]*)\s*=/g)) names.add(m[1]);
-  }
-  return names;
+/** 从 meta / link 这类标签取属性。没有 root（桌面端回传的访问里就只有字段）时为空。 */
+function metaOf(root, selector, attr = "content") {
+  if (!root) return "";
+  const el = root.querySelector(selector);
+  return el ? (el.getAttribute(attr) || "").trim() : "";
 }
 
 /**
- * 认出这一页属于哪个适配器。只看签名：`detect.pageGlobal` 在页面的全局名里。
- * @param {{root:Object, url?:string}} page
- * @param {Array<Object>} adapters
- * @returns {Object|null}
+ * 页面自带的那五个字段。适配器没有 `collect` 时，`parse` 只能用它们（模板「字段说明」）。
+ *
+ * 页面里的那一次（传 `root`）能从 meta 回退着取，桌面端收到回传时（只有字段）
+ * 就用回传的值——一个地方定义这五个字段叫什么，两路都调它。
+ * @param {{url?:string,title?:string,description?:string,ogImage?:string,
+ *          favIconUrl?:string,root?:Object}} source
  */
-function detect(page, adapters) {
-  const globals = pageGlobals(page.root);
-  return (
-    (adapters || []).find((a) => {
-      const sig = a.detect || {};
-      return !!sig.pageGlobal && globals.has(sig.pageGlobal);
-    }) || null
-  );
-}
-
-function readAttr(node, attr) {
-  if (attr === "text") return (node.textContent || "").trim();
-  if (attr === "html") return node.innerHTML || "";
-  return ((node.getAttribute && node.getAttribute(attr)) || "").trim();
-}
-
-/** 一个节点上按属性备选取值：第一个非空的胜出。 */
-function pickValue(node, attrs) {
-  for (const attr of attrs) {
-    const v = readAttr(node, attr);
-    if (v) return v;
-  }
-  return "";
-}
-
-function nodesFor(root, selector) {
-  return selector === "" ? [root] : root.querySelectorAll(selector);
-}
-
-/**
- * 一条 collect 规则取一个字段。三层都是有序备选，由外到内：
- * 选择器 → 该选择器命中的节点 → 节点上的属性。第一个产出值的胜出。
- * `many` 返回该选择器命中的全部值（每个节点取它自己第一个非空属性）。
- */
-function collectField(root, selectors, attrs, many) {
-  for (const selector of selectors) {
-    const values = [];
-    for (const node of nodesFor(root, selector)) {
-      const v = pickValue(node, attrs);
-      if (v) values.push(v);
-      if (!many) break;
-    }
-    if (values.length) return many ? values : values[0];
-  }
-  return many ? [] : null;
-}
-
-/** 页面自带的那五个字段。适配器没有 `collect` 时，`parse` 只能用它们（模板「字段说明」）。 */
-function builtinFields(page) {
-  const root = page.root;
-  const attr = (selector, name) => {
-    const el = root.querySelector(selector);
-    return el ? (el.getAttribute(name) || "").trim() : "";
-  };
+function builtinFields(source) {
   return {
-    url: page.url || "",
-    title: page.title || root.title || "",
-    description: page.description || attr("meta[name='description']", "content"),
-    ogImage: page.ogImage || attr("meta[property='og:image']", "content"),
-    favIconUrl: page.favIconUrl || attr("link[rel~='icon']", "href"),
+    url: source.url || "",
+    title: source.title || (source.root && source.root.title) || "",
+    description: source.description || metaOf(source.root, "meta[name='description']"),
+    ogImage: source.ogImage || metaOf(source.root, "meta[property='og:image']"),
+    favIconUrl: source.favIconUrl || metaOf(source.root, "link[rel~='icon']", "href"),
   };
-}
-
-/**
- * 采集：每条 collect 规则抽一个具名字段。选择器与属性都是有序备选。
- * @returns {Object} 字段名 → 值（`many` 为数组，抽不到为 null / []）
- */
-function collect(adapter, page) {
-  const out = {};
-  for (const rule of adapter.collect || []) {
-    if (!rule || !rule.field) continue;
-    const selectors = Array.isArray(rule.selector) ? rule.selector : [rule.selector];
-    const attrs = Array.isArray(rule.attr) ? rule.attr : [rule.attr];
-    out[rule.field] = collectField(page.root, selectors, attrs, !!rule.many);
-  }
-  return out;
 }
 
 /**
@@ -149,6 +82,22 @@ function parseFields(adapter, fields) {
 }
 
 /**
+ * 内置字段 + 扩展回传的采集字段 → 字段表、解析结果与合并后的字段表。
+ *
+ * 页面里的那一次（`identityForPage`）与桌面端收到回传的那一次
+ * （`cluster.identityKeysFor`）走的是这同一个函数，两条路径的结论因此可比。
+ * @param {Object} adapter 认下的适配器
+ * @param {Object} builtin 内置五个字段（`builtinFields`）
+ * @param {Object} [pageFields] 采集字段，按 `adapter.file` 分组（`collectPage` 的产物）
+ */
+function identityForFields(adapter, builtin, pageFields) {
+  const collected = (pageFields && pageFields[adapter.file]) || {};
+  const fields = { ...builtin, ...collected };
+  const parsed = parseFields(adapter, fields);
+  return { fields, parsed, extracted: { ...fields, ...parsed } };
+}
+
+/**
  * 一页跑完 detect → collect → parse，产出**字段**与**作品身份键**。
  * 认不出平台返回 null（调用方保持今天的行为）；认出来了就一定有 `keys`，
  * 抠不到编号时 `keys` 少一路而已——这里没有「丢弃」这个结论，
@@ -156,11 +105,14 @@ function parseFields(adapter, fields) {
  * @returns {{adapter:Object, fields:Object, parsed:Object, keys:Array<Object>}|null}
  */
 function identityForPage(page, adapters) {
-  const adapter = detect(page, adapters);
+  const pageData = collectPage(adapters, page.root);
+  const adapter = detectBySignature(pageData.pageSignature, adapters);
   if (!adapter) return null;
-  const fields = { ...builtinFields(page), ...collect(adapter, page) };
-  const parsed = parseFields(adapter, fields);
-  const extracted = { ...fields, ...parsed };
+  const { fields, parsed, extracted } = identityForFields(
+    adapter,
+    builtinFields(page),
+    pageData.pageFields,
+  );
   const keys = extractKeys({
     url: fields.url,
     title: fields.title,
@@ -172,9 +124,8 @@ function identityForPage(page, adapters) {
 }
 
 module.exports = {
-  pageGlobals,
-  detect,
-  collect,
+  builtinFields,
+  identityForFields,
   parseFields,
   identityForPage,
 };

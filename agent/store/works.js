@@ -22,10 +22,11 @@ const WORK_ROW_SELECT = `SELECT w.*,
  LEFT JOIN records r ON r.workId = w.id`;
 
 class WorkStore {
-  constructor(db, { emit, sites } = {}) {
+  constructor(db, { emit, sites, adapters } = {}) {
     this.db = db;
     this.emit = emit || (() => {});
     this.sites = sites;
+    this.adapters = adapters;
   }
 
   static schema(db) {
@@ -409,7 +410,7 @@ class WorkStore {
         cursorTs = row.timestamp;
         cursorId = row.id;
         processed++;
-        const { keys } = identityKeysFor(row, watchlist);
+        const { keys } = identityKeysFor(row, watchlist, undefined, this.adapters);
         const visit = this.recordWorkVisit({
           keys,
           title: row.title,

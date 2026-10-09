@@ -20,16 +20,20 @@ const { WorkStore } = require("./store/works");
 const { VisitStore } = require("./store/visits");
 const { AgentMemoryStore } = require("./store/agent-memory");
 const { RecommendationStore } = require("./store/recommendations");
+const { loadAdapters } = require("./adapters");
 
 class RecordStore {
   /**
    * @param {string} dbPath
    * @param {Function} [broadcast] - (type, payload) => void
+   * @param {{adapters?:Array<Object>}} [options] 适配器缺省从 `adapters/` 目录读（内置与用户共用）
    */
-  constructor(dbPath, broadcast) {
+  constructor(dbPath, broadcast, options = {}) {
     this.dbPath = dbPath;
     this.broadcast = broadcast || (() => {});
     this.db = null;
+    // 适配器只在启动时读一次：写入路径用它，推给扩展去页面采集的也是同一份。
+    this._adapters = options.adapters || loadAdapters();
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -40,12 +44,13 @@ class RecordStore {
 
     this._settings = new SettingsStore(this.db, emit);
     this._sites = new SiteStore(this.db, emit);
-    this._works = new WorkStore(this.db, { emit, sites: this._sites });
+    this._works = new WorkStore(this.db, { emit, sites: this._sites, adapters: this._adapters });
     this._visits = new VisitStore(this.db, {
       emit,
       sites: this._sites,
       works: this._works,
       settings: this._settings,
+      adapters: this._adapters,
     });
     this._agent = new AgentMemoryStore(this.db, emit);
     this._recommendations = new RecommendationStore(this.db, { emit, visits: this._visits });
@@ -83,6 +88,11 @@ class RecordStore {
   saveWindowBounds(b) { return this._settings.saveWindowBounds(b); }
 
   // ── Sites ──────────────────────────────────────────────────────────────────
+
+  /** 适配器（内置与用户写在同一个目录）。写路径用它们，扩展也拿这一份去采集页面。 */
+  getAdapters() {
+    return this._adapters;
+  }
 
   getWatchlist() { return this._sites.getWatchlist(); }
   addWatchlist(entry) { return this._sites.addWatchlist(entry); }
