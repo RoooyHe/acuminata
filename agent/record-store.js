@@ -22,6 +22,7 @@ const { VisitStore } = require("./store/visits");
 const { CandidateStore } = require("./store/candidates");
 const { AgentMemoryStore } = require("./store/agent-memory");
 const { RecommendationStore } = require("./store/recommendations");
+const { rank, buildProfile } = require("./rank");
 const { loadAdapters } = require("./adapters");
 
 class RecordStore {
@@ -158,6 +159,32 @@ class RecordStore {
   clearCandidates() { return this._candidates.clearCandidates(); }
 
   // ── Recommendations ────────────────────────────────────────────────────────
+
+  /**
+   * 排序：把候选排成推荐（issue #31）。走的是「画像 → rank() → 替换未裁决推荐」
+   * 这一条通道，排序本身是纯函数（agent/rank.js），这里只负责把库里的事实取出来。
+   * 排序可重跑，所以替掉的是尚未裁决的那批。
+   * @param {Object} [metadata] 按候选地址给出的元数据（ADR-0008）；取不到就没有
+   * @returns {number} 写出的推荐条数
+   */
+  rankCandidates(metadata) {
+    const keys = this._works.listAllWorkKeys();
+    const profile = buildProfile({
+      works: this._works.listScoredWorks(),
+      keys,
+      sites: this._visits.getSiteAffinity(),
+      memories: this._agent.getAllMemories(),
+    });
+    // 元数据由调用方取好传进来——rank 不发请求，元数据站不可用也不卡住（ADR-0008）。
+    // shortcut: 还没人去电视猫的 JSON 搜索接口取元数据，排序现在只用廉价信号 + 画像；
+    // 接上 client 后把它按候选地址塞进 metadata 即可，rank 不用改。
+    const recommended = rank(this._candidates.getCandidates(), profile, {
+      adapters: this._adapters,
+      seenKeys: keys.map((k) => `${k.kind}:${k.value}`),
+      metadata: metadata || {},
+    });
+    return this._recommendations.replacePending(recommended);
+  }
 
   getRecommendations(limit) { return this._recommendations.getRecommendations(limit); }
   rejectRecommendation(id) { return this._recommendations.rejectRecommendation(id); }

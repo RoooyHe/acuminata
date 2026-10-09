@@ -852,6 +852,8 @@ window.electronAPI.onUpdate((data) => {
     setBackfillStatus(`${worksJobLabel(data.op)}中… ${data.processed} / ${data.before}`);
   } else if (data.type === "candidatesUpdated") {
     loadCandidates();
+  } else if (data.type === "recommendationsUpdated") {
+    loadRecommendations();
   } else if (data.type === "agentPendingUpdated") {
     loadPendingActions();
   }
@@ -1063,6 +1065,23 @@ document.getElementById("btnCandidatesClear").onclick = async function () {
   await window.electronAPI.clearCandidates();
   await loadCandidates();
   showToast("候选已清空");
+};
+
+// 排序：候选池 → 带理由的推荐（推荐列表在 AI 标签页）。可重跑，重跑替换未裁决的那批。
+document.getElementById("btnCandidatesRank").onclick = async function () {
+  const btn = this;
+  btn.disabled = true;
+  btn.textContent = "排序中…";
+  try {
+    const count = await window.electronAPI.rankCandidates();
+    await loadRecommendations();
+    showToast(count > 0 ? `排出 ${count} 条推荐` : "没有可推荐的候选（都看过了？）");
+  } catch (e) {
+    showToast(String(e), "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "排序成推荐";
+  }
 };
 
 document.getElementById("candidatesContainer").addEventListener(
