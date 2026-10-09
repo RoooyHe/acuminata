@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const WebSocket = require("ws");
 const { RecordStore } = require("./agent/record-store");
+const { ADAPTER_DIR } = require("./agent/adapters");
 const { createIPCDispatcher } = require("./agent/ipc-dispatcher");
 const { createExecuteTool } = require("./agent/tools/orchestrator");
 const {
@@ -24,6 +25,9 @@ const EXTENSION_PORT = 8766;
 const DB_PATH = process.env.ACUMINATA_DB_PATH
   ? process.env.ACUMINATA_DB_PATH
   : path.join(app.getPath("userData"), "tracker.db");
+// 用户写的适配器放在这里（打包后内置的 adapters/ 在 asar 里、不可写）。
+// 与内置适配器同一种格式、同一个 loader，同名时用户目录覆盖内置（ADR-0006）。
+const USER_ADAPTER_DIR = path.join(app.getPath("userData"), "adapters");
 
 let mainWindow;
 let extensionServer;
@@ -96,9 +100,15 @@ function getAIConfig() {
 // ── Composition root ─────────────────────────────────────────────────────────
 
 async function init() {
+  // 目录先建出来：用户才找得到往哪儿放适配器（不存在时 loadAdapters 也只是读空）。
+  try {
+    fs.mkdirSync(USER_ADAPTER_DIR, { recursive: true });
+  } catch (e) { /* 建不出来就当没有用户适配器 */ }
   store = new RecordStore(DB_PATH, (type, data) => {
     broadcastToExtensions({ type, ...data });
-  });
+  }, { adapterDirs: [ADAPTER_DIR, USER_ADAPTER_DIR] });
+  // 适配器健康度按已加载的适配器初始化：从未命中的也能在界面上被看见。
+  adapterHealth = createAdapterHealth(store.getAdapters());
 
   await store.init();
 
@@ -198,9 +208,10 @@ function startExtensionServer() {
 // ── 适配器健康度 ──────────────────────────────────────────────────────────────
 // 区分「这一页不是作品页」（正常丢弃）与「适配器已失效」（会静默丢整段历史）。
 // 见 docs/adr/0003 的后果条：用户自己写适配器，改版是常态，静默失效是头号故障。
-const adapterHealth = createAdapterHealth();
+// 在 init() 里按已加载的适配器建，故用 let。
+let adapterHealth;
 
-// 未归属数 + 每站点适配器命中情况 + 歧义作品列表：健康度视图读它，一条访问的广播也带它。
+// 未归属数 + 每适配器命中情况 + 歧义作品列表：健康度视图读它，一条访问的广播也带它。
 function healthSnapshot() {
   return {
     unattributedCount: store.getUnattributedCount(),
@@ -219,7 +230,7 @@ function handleExtensionMessage(ws, msg) {
       const result = store.recordVisit(msg);
       const dropped = result.action === "drop";
       // 列表页是适配器声明过的正常页面，不算适配器失效（ADR-0005）。
-      if (result.reason !== "list-page") adapterHealth.note(msg.domain, !dropped);
+      if (result.reason !== "list-page") adapterHealth.noteVisit(result, msg.domain);
       // 命中与丢弃都各记一次，健康度独立于 recordAdded 广播推给界面。
       broadcastToExtensions({
         type: "adapterHealthUpdated",

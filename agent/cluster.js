@@ -2,7 +2,7 @@
  * 访问写入路径上的**纯规则**，无 DB、无副作用。
  *
  * 这里只放能在内存里判完的规则：
- *   - 分组（label → 同一站点的镜像）与组内正则闸门
+ *   - 分组（适配器声明的镜像 → 同一个站点）与组内正则闸门
  *   - **命名捕获组抽取**（适配器：闸门 → 解析器，见 docs/adr/0007）
  *   - **作品身份键**的产出（任一路命中即归并）
  *   - 路径抽取、同组同路径的**去重判定**（谁算同一次访问）
@@ -21,18 +21,34 @@ const { extractKeys } = require("./identity");
 const { detectBySignature } = require("../shared/page-collect");
 const { builtinFields, identityForFields } = require("./adapter");
 
+/** 一个站点的显示名：登记条目上的 label 优先，认不出就用域名。分组不再看它。 */
 function resolveGroupLabel(matchedRule, domain, watchlist) {
   const currentWatch = watchlist.find((w) => w.domain === matchedRule);
   return currentWatch ? currentWatch.label || domain : domain;
 }
 
-function getGroupRules(groupLabel, watchlist) {
-  return watchlist.filter(
-    (w) =>
-      (w.label || w.domain) === groupLabel &&
-      w.regexFilter &&
-      w.regexFilter.trim() !== "",
-  );
+/**
+ * 一个域名的镜像组：适配器 `mirrors` 里包含它的那一组。
+ *
+ * `mirrors` 是若干域名组，每组是一个站点的原站与镜像（`[["a.com","b.com"]]`）。
+ * 没被任何适配器声明过的域名自成一组——它就是一个单域名站点。
+ * 镜像关系来自适配器声明，不再来自 `watchlist.label` 字符串相等（#29）。
+ * @param {string} domain
+ * @param {Array<Object>} [adapters]
+ * @returns {string[]}
+ */
+function mirrorGroupFor(domain, adapters) {
+  for (const adapter of adapters || []) {
+    for (const group of adapter.mirrors || []) {
+      if (Array.isArray(group) && group.includes(domain)) return group.slice();
+    }
+  }
+  return [domain];
+}
+
+/** 一个站点的规范键：镜像组里的第一个域名。同组镜像因此只算一个来源。 */
+function siteKeyFor(domain, adapters) {
+  return mirrorGroupFor(domain, adapters)[0];
 }
 
 function matchesRegex(rules, title, url) {
@@ -80,6 +96,10 @@ function extractFromRules(rules, title, url) {
   return out;
 }
 
+/**
+ * 按 label 取一组域名——**只用于界面的站点筛选**，不再用来判定镜像。
+ * 镜像由适配器声明（`mirrorGroupFor`），label 只是显示名。
+ */
 function getGroupDomains(groupLabel, watchlist, fallbackDomain) {
   const domains = watchlist
     .filter((w) => (w.label || w.domain) === groupLabel)
@@ -89,20 +109,33 @@ function getGroupDomains(groupLabel, watchlist, fallbackDomain) {
 }
 
 /**
- * 一条访问落在哪一组：label、这一组的域名、这一组的规则。
+ * 一条访问落在哪一组：这一组的域名、规范键与规则。
  *
- * 「组」是镜像的落点：label 相同即同一个站点，组内域名互为镜像。闸门与解析
- * 用的是同一份 `regexFilter`，所以域名和规则要一起取——分头去取，就落了
- * 一个「闸门用这一组的规则、去重用另一组的域名」的口子。
+ * 「组」是镜像的落点：适配器 `mirrors` 声明了哪些域名互为镜像，组内域名即
+ * 同一个站点。闸门与解析用的是同一份 `regexFilter`，所以域名和规则要一起取——
+ * 分头去取，就落了一个「闸门用这一组的规则、去重用另一组的域名」的口子。
  *
- * @returns {{ label:string, domains:string[], rules:WatchlistEntry[] }}
+ * @param {string} matchedRule 这条访问命中的登记域名
+ * @param {string} domain 访问实际落在的域名
+ * @param {Array<Object>} watchlist
+ * @param {Array<Object>} [adapters] 镜像声明来自这里
+ * @returns {{ label:string, key:string, domains:string[], rules:WatchlistEntry[] }}
  */
-function resolveGroup(matchedRule, domain, watchlist) {
-  const label = resolveGroupLabel(matchedRule, domain, watchlist);
+function resolveGroup(matchedRule, domain, watchlist, adapters) {
+  const entry = watchlist.find((w) => w.domain === matchedRule);
+  // 镜像按**登记域名**查：扩展会把 `m.example.com` 报成 domain、`example.com` 报成 matchedRule，
+  // 拿实际主机名去查会漏拊镜像组与闸门。
+  const domains = mirrorGroupFor(entry ? entry.domain : domain, adapters);
   return {
-    label,
-    domains: getGroupDomains(label, watchlist, matchedRule),
-    rules: getGroupRules(label, watchlist),
+    label: resolveGroupLabel(matchedRule, domain, watchlist),
+    key: domains[0],
+    domains,
+    rules: watchlist.filter(
+      (w) =>
+        domains.includes(w.domain) &&
+        w.regexFilter &&
+        w.regexFilter.trim() !== "",
+    ),
   };
 }
 
@@ -174,15 +207,15 @@ function computeDailyScore(existing, now) {
  * @param {Array<Object>} watchlist
  * @param {Array<Object>} [groupRules] 分组规则；不传则自己取（回填用）
  * @param {Array<Object>} [adapters] 适配器；没有就是今天的行为（只有旧规则那一路）
- * @returns {{ extracted: object, keys: Array<{kind:string,value:string,confidence:string}> }}
+ * @returns {{ extracted: object, keys: Array<{kind:string,value:string,confidence:string}>,
+ *            adapter: Object|null, parsed: Object }}
+ *          `adapter` / `parsed` 供适配器健康度判断「认下的适配器有没有产出身份字段」。
  */
 function identityKeysFor(incoming, watchlist, groupRules, adapters) {
   const rules =
     groupRules ||
-    getGroupRules(
-      resolveGroupLabel(incoming.matchedRule, incoming.domain, watchlist),
-      watchlist,
-    );
+    resolveGroup(incoming.matchedRule, incoming.domain, watchlist, adapters)
+      .rules;
   const fromRules = extractFromRules(rules, incoming.title, incoming.url);
   const builtin = builtinFields(incoming);
   const adapter = detectBySignature(incoming.pageSignature, adapters);
@@ -199,6 +232,8 @@ function identityKeysFor(incoming, watchlist, groupRules, adapters) {
   return {
     extracted: { ...(adapted ? adapted.parsed : {}), ...fromRules },
     keys,
+    adapter,
+    parsed: adapted ? adapted.parsed : {},
   };
 }
 
@@ -253,5 +288,7 @@ module.exports = {
   computeDailyScore,
   resolveGroupLabel,
   getGroupDomains,
+  mirrorGroupFor,
+  siteKeyFor,
   extractPath,
 };

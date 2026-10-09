@@ -3,7 +3,7 @@
 // (open → schema → seed → dirty/export) and wires the domains together:
 //
 //   settings        设置（含窗口位置、语言、AI 配置）
-//   sites           站点（watchlist / 镜像分组 / 正则规则）
+//   sites           站点（watchlist / 正则规则；镜像由适配器声明）
 //   works           作品（身份键、跨站融合、计分、回填）
 //   visits          访问（记录、统计、写入路径 recordVisit）
 //   candidates      候选（列表页抓来还没排的条目）
@@ -28,14 +28,15 @@ class RecordStore {
   /**
    * @param {string} dbPath
    * @param {Function} [broadcast] - (type, payload) => void
-   * @param {{adapters?:Array<Object>}} [options] 适配器缺省从 `adapters/` 目录读（内置与用户共用）
+   * @param {{adapters?:Array<Object>, adapterDirs?:string|string[]}} [options]
+   *        适配器缺省从内置 `adapters/` 目录读；多个目录时后者覆盖前者（用户目录在后）
    */
   constructor(dbPath, broadcast, options = {}) {
     this.dbPath = dbPath;
     this.broadcast = broadcast || (() => {});
     this.db = null;
     // 适配器只在启动时读一次：写入路径用它，推给扩展去页面采集的也是同一份。
-    this._adapters = options.adapters || loadAdapters();
+    this._adapters = options.adapters || loadAdapters(options.adapterDirs);
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -70,6 +71,8 @@ class RecordStore {
       module.schema(this.db);
     }
     this._sites.seedDefaults();
+    // 老库没有 records.site：按适配器声明的镜像补一次，镜像从一开始就只算一个来源。
+    this._visits.backfillSites();
   }
 
   onDirty(fn) {
@@ -97,6 +100,9 @@ class RecordStore {
   getAdapters() {
     return this._adapters;
   }
+
+  /** 老库的 records.site 迁移（来源键来自适配器声明的镜像）。 */
+  backfillSites() { return this._visits.backfillSites(); }
 
   getWatchlist() { return this._sites.getWatchlist(); }
   addWatchlist(entry) { return this._sites.addWatchlist(entry); }
