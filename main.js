@@ -14,7 +14,6 @@ const {
 } = require("./agent/tools");
 const { agentLoop, executeApprovedActions } = require("./agent/executor");
 const { createAIProviders } = require("./agent/providers");
-const { evaluateIncoming } = require("./agent/cluster");
 const { createAdapterHealth } = require("./agent/adapter-health");
 
 const EXTENSION_PORT = 8766;
@@ -195,25 +194,9 @@ const adapterHealth = createAdapterHealth();
 function handleExtensionMessage(ws, msg) {
   switch (msg.type) {
     case "addRecord": {
-      const nowTs = Date.now();
-      const findExisting = (groupDomains, path) => {
-        const placeholders = groupDomains.map(() => "?").join(",");
-        const groupRecords = store._dbAll(
-          `SELECT * FROM records WHERE matchedRule IN (${placeholders}) ORDER BY timestamp DESC`,
-          groupDomains,
-        );
-        for (const r of groupRecords) {
-          try {
-            const u = new URL(r.url);
-            if (u.pathname + u.search + u.hash === path) return r;
-          } catch (e) {
-            if (r.url === path) return r;
-          }
-        }
-        return null;
-      };
-
-      const result = evaluateIncoming(msg, store.getWatchlist(), findExisting);
+      // 一条访问走一条通道：闸门 → 身份键 → 同组同路径去重 → 当日计分 →
+      // 作品归属 → 落库，全部在 store 内一次判完（docs/adr/0002）。
+      const result = store.recordVisit(msg);
       const dropped = result.action === "drop";
       adapterHealth.note(msg.domain, !dropped);
       // 丢弃/去重都不产生 recordAdded 广播。健康度得自己推一次，
@@ -223,48 +206,22 @@ function handleExtensionMessage(ws, msg) {
           type: "adapterHealthUpdated",
           adapters: adapterHealth.snapshot(),
         });
+        return;
       }
 
-      if (result.action === "drop" || result.action === "ignore") return;
-
-      // 作品归属：身份键 → works（docs/adr/0007）。
-      // 产不出键时 work 为 null，记录照常存在，只是归不到作品——降级而非丢弃。
-      const visit = store.recordWorkVisit({
-        keys: result.keys,
-        title: (result.record && result.record.title) || msg.title,
-        timestamp: nowTs,
-      });
-      if (visit.ambiguous) {
+      // 身份键指向多部作品：按 ADR-0002 那是「误合」风险，不静默合并，
+      // 只报到日志等用户裁决（记录已经照常落库）。
+      if (result.ambiguous) {
         console.warn(
           "[Works] 身份键指向多个作品，需要用户裁决:",
           JSON.stringify(result.keys),
         );
       }
-      const workId = visit.work ? visit.work.id : null;
 
-      if (result.action === "update") {
-        store.updateRecord(result.record.id, {
-          url: result.updates.url,
-          domain: result.updates.domain,
-          matchedRule: result.updates.matchedRule,
-          pinned: result.updates.pinned,
-          score: result.updates.score,
-          timestamp: result.updates.timestamp,
-          updatedAt: result.updates.updatedAt,
-          workId,
-          edition: (result.extracted && result.extracted.edition) || "",
-        });
-        broadcastToExtensions({ type: "recordUpdated", record: result.record });
-        return;
-      }
-
-      // insert
-      msg.timestamp = nowTs;
-      msg.workId = workId;
-      // 适配器的命名捕获组抠出的**版本**随访问落库（来源 = 站点 + 版本）。
-      msg.edition = (result.extracted && result.extracted.edition) || "";
-      const record = store.insertRecord(msg);
-      broadcastToExtensions({ type: "recordAdded", record });
+      broadcastToExtensions({
+        type: result.action === "update" ? "recordUpdated" : "recordAdded",
+        record: result.record,
+      });
       break;
     }
     case "getStats": {

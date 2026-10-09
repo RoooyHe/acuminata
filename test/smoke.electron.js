@@ -3,6 +3,7 @@
 //   1. window.electronAPI exists and every route is callable
 //   2. every invoke channel round-trips (a handler is actually registered)
 //   3. the renderer rendered real data read over IPC
+//   4. 扩展上报一条访问只走一次调用（WS → addRecord → RecordStore.recordVisit）
 // Run with: npm run test:smoke
 
 const fs = require("fs");
@@ -18,7 +19,12 @@ const SEED_VISIT_URL_A = "https://bilibili.com/video/smoke";
 const SEED_VISIT_URL_B = "https://tvmao.com/kanju/smoke";
 const SEED_EDITION = "中文字幕";
 const SEED_DWELL_TEXT = "2分5秒";
+// 供主进程那条通路用的站点：带命名捕获组，上报的访问才归得到作品。
+const SEED_WS_DOMAIN = "smoke-ws.example";
+const SEED_WS_URL = "https://smoke-ws.example/v/42";
+const SEED_WS_TITLE = "SMOKE 上报 δ";
 const TIMEOUT_MS = 60000;
+const WS_PORT = 8766;
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-smoke-"));
 const dbPath = path.join(tmpDir, "tracker.db");
@@ -32,6 +38,13 @@ async function seedDatabase() {
   const store = new RecordStore(dbPath);
   await store.init();
   store.addWatchlist({ domain: "tvmao.com", label: "电视猫", color: "#fff" });
+  store.addWatchlist({
+    domain: SEED_WS_DOMAIN,
+    label: "冒烟站",
+    color: "#fff",
+    regexFilter: "/v/(?<code>[0-9]+)",
+    regexTarget: "url",
+  });
   const ts = Date.now();
   // 预置一部作品，两个站点上是**同名版本**：详情必须分别显示各自的站点。
   const visit = store.recordWorkVisit({
@@ -115,6 +128,67 @@ function waitForLoad(win) {
     if (!win.webContents.isLoading()) return resolve();
     win.webContents.once("did-finish-load", resolve);
   });
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 当一次扩展用：连上主进程的 WS，上报一条访问，再重报同一条。
+ *
+ * main.js 的 addRecord 分支除此之外没有别的入口——而它正是「一条访问只需一次
+ * 调用」的那一次调用（store.recordVisit），所以这里直接走真实的通路。
+ * 库里到底写了什么，也按扩展的方式问主进程要（exportData）。
+ */
+async function reportVisitOverWs() {
+  const WebSocket = require("ws");
+  const ws = new WebSocket(`ws://127.0.0.1:${WS_PORT}`);
+  const inbox = [];
+  ws.on("message", (d) => {
+    try {
+      inbox.push(JSON.parse(d));
+    } catch (e) {
+      /* 非 JSON 不入信箱 */
+    }
+  });
+  await new Promise((resolve, reject) => {
+    ws.once("open", resolve);
+    ws.once("error", reject);
+  });
+
+  const visit = {
+    id: "smoke-ws-1",
+    url: SEED_WS_URL,
+    title: SEED_WS_TITLE,
+    domain: SEED_WS_DOMAIN,
+    matchedRule: SEED_WS_DOMAIN,
+    tabId: 7,
+    timestamp: Date.now(),
+    favIconUrl: "",
+    description: "",
+    ogImage: "",
+  };
+  const waitFor = async (pred, ms = 5000) => {
+    const deadline = Date.now() + ms;
+    while (!pred() && Date.now() < deadline) await sleep(25);
+  };
+
+  ws.send(JSON.stringify({ type: "addRecord", ...visit }));
+  await waitFor(() =>
+    inbox.some((m) => m.type === "recordAdded" || m.type === "recordUpdated"),
+  );
+
+  // 同一条访问再报一次（同标签页、60s 内）：库里不该出现第二条
+  ws.send(JSON.stringify({ type: "addRecord", ...visit }));
+  await sleep(300);
+
+  ws.send(JSON.stringify({ type: "exportData" }));
+  await waitFor(() => inbox.some((m) => m.type === "exportData"));
+  ws.close();
+
+  const exported = inbox.filter((m) => m.type === "exportData").pop();
+  if (!exported) return { count: 0, workId: null };
+  const mine = (exported.records || []).filter((r) => r.id === visit.id);
+  return { count: mine.length, workId: mine[0] ? mine[0].workId : null };
 }
 
 // Runs inside the renderer: the only place where window.electronAPI is real.
@@ -261,6 +335,9 @@ async function main() {
     pageProbe(invokeRoutes),
   );
 
+  // 扩展所走的那条通路（真实 WS → main.js 的 addRecord → store.recordVisit）
+  const wsVisit = await reportVisitOverWs();
+
   const failures = [];
   const expect = (cond, msg) => {
     if (!cond) failures.push(msg);
@@ -341,6 +418,14 @@ async function main() {
   expect(
     /回填完成：未归属 \d+ → \d+ 条/.test(probe.backfillText),
     "renderer did not report backfill progress/counts: " + probe.backfillText,
+  );
+  expect(
+    wsVisit.count === 1,
+    "上报同一条访问两次后，库里出现了 " + wsVisit.count + " 条（应当只有 1 条）",
+  );
+  expect(
+    !!wsVisit.workId,
+    "WS 上报的那条访问没有归到作品（workId 为空）——一次调用要把作品归属一起做完",
   );
   expect(
     consoleErrors.length === 0,

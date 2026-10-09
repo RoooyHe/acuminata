@@ -63,7 +63,7 @@ Key columns in `records`: `id`, `url`, `title`, `domain`, `matchedRule`, `tabId`
 
 Deduplication: same URL + same tabId within 60s is ignored. `chrome://` and `chrome-extension://` URLs are never tracked.
 
-The Electron `main.js` has a "directory clustering" feature — same-path URLs across different domains in the same watchlist group are treated as duplicates, and daily re-visits auto-pin records with score increment (max 1/day).
+The **visit write path** is one call, `RecordStore.recordVisit(incoming)` — 闸门 → 身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库, all inside `agent/record-store.js` so the call order is testable. `main.js` calls it once per reported visit and only decides what to broadcast; callers never pass a dedup callback. Within it: same-path URLs across different domains in the same watchlist group are treated as duplicates, and daily re-visits auto-pin records with score increment (max 1/day). Identity keys and the pure rules live in `agent/identity.js` / `agent/cluster.js`.
 
 ## IPC channels (renderer ↔ main)
 

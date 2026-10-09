@@ -1,27 +1,20 @@
 /**
- * Record clustering module — pure logic, no DB or side effects.
+ * 访问写入路径上的**纯规则**，无 DB、无副作用。
  *
- * Responsibilities:
- *   - Regex validation for grouped watchlist entries
+ * 这里只放能在内存里判完的规则：
+ *   - 分组（label → 同一站点的镜像）与组内正则闸门
  *   - **命名捕获组抽取**（适配器：闸门 → 解析器，见 docs/adr/0007）
  *   - **作品身份键**的产出（任一路命中即归并）
- *   - Group resolution (label → domains)
- *   - Path extraction from URLs
- *   - Dedup: same path within a group
- *   - 访问层每日计分（保留）与**作品层每日计分**（新增，跨站累加）
+ *   - 路径抽取、同组同路径的**去重判定**（谁算同一次访问）
+ *   - 访问层每日计分与**作品层每日计分**（跨站累加）
  *
- * @param {Object} incoming
- * @param {string} incoming.url
- * @param {string} incoming.title
- * @param {string} incoming.domain
- * @param {string} incoming.matchedRule
- * @param {number} incoming.tabId
- * @param {number} incoming.timestamp
- * @param {WatchlistEntry[]} watchlist
- * @param {Function} findExisting - (groupDomains: string[], path: string) => Record | null
- * @returns {{ action: "drop"|"ignore"|"update"|"insert",
- *             record?: any, updates?: object, reason?: string,
- *             extracted?: object, keys?: Array<{kind:string,value:string,confidence:string}> }}
+ * **身份判定不在这里**：把两次访问判成同一部作品的是身份键（identity.js）与
+ * 归属（record-store.js），本模块只产出键，不下结论。
+ *
+ * 把这些规则按顺序串起来、并落库的那条链路只有一条，在
+ * `RecordStore.recordVisit`：闸门 → 身份键 → 去重 → 当日计分 → 作品归属 → 落库。
+ * 链路不在这里，因为「查重」与「落库」都要读库；把它们交给调用方做，
+ * 就得到了一条谁也没测过的调用顺序。
  */
 
 const { extractKeys } = require("./identity");
@@ -93,6 +86,24 @@ function getGroupDomains(groupLabel, watchlist, fallbackDomain) {
   return domains;
 }
 
+/**
+ * 一条访问落在哪一组：label、这一组的域名、这一组的规则。
+ *
+ * 「组」是镜像的落点：label 相同即同一个站点，组内域名互为镜像。闸门与解析
+ * 用的是同一份 `regexFilter`，所以域名和规则要一起取——分头去取，就落了
+ * 一个「闸门用这一组的规则、去重用另一组的域名」的口子。
+ *
+ * @returns {{ label:string, domains:string[], rules:WatchlistEntry[] }}
+ */
+function resolveGroup(matchedRule, domain, watchlist) {
+  const label = resolveGroupLabel(matchedRule, domain, watchlist);
+  return {
+    label,
+    domains: getGroupDomains(label, watchlist, matchedRule),
+    rules: getGroupRules(label, watchlist),
+  };
+}
+
 function extractPath(url) {
   try {
     const u = new URL(url);
@@ -100,6 +111,22 @@ function extractPath(url) {
   } catch (e) {
     return url;
   }
+}
+
+/**
+ * 同一个标签页在 60s 内重报同一页：还是那一次访问，不产生第二条。
+ * 扩展在它自己那一层先挡了一道（tab-tracker），这里是权威的那一道。
+ *
+ * @param {Object|null} existing - 同组同路径的那条访问
+ * @param {{tabId:number}} incoming
+ * @param {number} now
+ */
+function isRepeatVisit(existing, incoming, now) {
+  return (
+    !!existing &&
+    incoming.tabId === existing.tabId &&
+    now - existing.timestamp < 60000
+  );
 }
 
 function computeDailyScore(existing, now) {
@@ -130,8 +157,9 @@ function computeDailyScore(existing, now) {
 /**
  * 一条访问的作品身份键：适配器的命名捕获组 + 页面字段。
  *
- * 实时上报（evaluateIncoming）与历史回填共用这一条路径（docs/adr/0002：
- * 判定只做一次、结论落库）。这里**不含闸门**——闸门只决定「这一页要不要收」，
+ * 实时上报（RecordStore.recordVisit）与历史回填（RecordStore.backfillWorks）
+ * 共用这一条路径（docs/adr/0002：判定只做一次、结论落库）。
+ * 这里**不含闸门**——闸门只决定「这一页要不要收」，
  * 回填面对的是已经收下的历史，不能因为适配器今天不匹配就把旧访问判死。
  *
  * @returns {{ extracted: object, keys: Array<{kind:string,value:string,confidence:string}> }}
@@ -152,87 +180,6 @@ function identityKeysFor(incoming, watchlist, groupRules) {
     extracted,
   });
   return { extracted, keys };
-}
-
-function evaluateIncoming(incoming, watchlist, findExisting) {
-  const now = incoming.timestamp || Date.now();
-
-  // 1. Resolve group
-  const groupLabel = resolveGroupLabel(incoming.matchedRule, incoming.domain, watchlist);
-
-  // 2. 闸门 + 解析（同一个正则）
-  const groupRules = getGroupRules(groupLabel, watchlist);
-  if (groupRules.length > 0 && !matchesRegex(groupRules, incoming.title, incoming.url)) {
-    // 这一页不是作品页，丢弃是有意的。
-    // 但若适配器写错（正则改版失效），这里会静默丢历史——
-    // 调用方必须统计 no-rule-match 的次数并告警（ADR-0003）。
-    return { action: "drop", reason: "no-rule-match" };
-  }
-
-  // 2b. 从命名捕获组里抠出作品身份，并汇总成身份键
-  const { extracted, keys } = identityKeysFor(incoming, watchlist, groupRules);
-
-  // 3. Group domains
-  const groupDomains = getGroupDomains(groupLabel, watchlist, incoming.matchedRule);
-
-  // 4. Extract path
-  const incomingPath = extractPath(incoming.url);
-
-  // 5. Find existing by path in group
-  const existing = findExisting(groupDomains, incomingPath);
-
-  if (existing) {
-    // 6. Dedup: same tab within 60s
-    if (incoming.tabId === existing.tabId && now - existing.timestamp < 60000) {
-      return { action: "ignore" };
-    }
-
-    // 7. Daily scoring
-    const { newPinned, newScore, newUpdatedAt } = computeDailyScore(existing, now);
-
-    const updated = {
-      ...existing,
-      url: incoming.url,
-      domain: incoming.domain,
-      matchedRule: incoming.matchedRule,
-      pinned: newPinned,
-      score: newScore,
-      timestamp: now,
-      updatedAt: newUpdatedAt,
-    };
-
-    return {
-      action: "update",
-      record: updated,
-      extracted,
-      keys,
-      updates: {
-        url: incoming.url,
-        domain: incoming.domain,
-        matchedRule: incoming.matchedRule,
-        pinned: newPinned,
-        score: newScore,
-        timestamp: now,
-        updatedAt: newUpdatedAt,
-      },
-    };
-  }
-
-  // 8. New record
-  const record = {
-    id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
-    url: incoming.url,
-    title: incoming.title || "",
-    domain: incoming.domain,
-    matchedRule: incoming.matchedRule,
-    tabId: incoming.tabId,
-    timestamp: now,
-    favIconUrl: incoming.favIconUrl || "",
-    description: incoming.description || "",
-    ogImage: incoming.ogImage || "",
-  };
-
-  return { action: "insert", record, extracted, keys };
 }
 
 /**
@@ -277,11 +224,13 @@ function resolveWorkScore(existingWork, now) {
 }
 
 module.exports = {
-  evaluateIncoming,
   identityKeysFor,
+  isRepeatVisit,
+  resolveGroup,
   resolveWorkScore,
   extractFromRules,
   matchesRegex,
   computeDailyScore,
   resolveGroupLabel,
+  extractPath,
 };
