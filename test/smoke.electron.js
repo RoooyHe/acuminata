@@ -213,7 +213,9 @@ function pageProbe(invokeRoutes) {
       worksHealthText: "",
       unattributedText: "",
       sourcesText: "",
+      sourcesRowHtml: "",
       visitsText: "",
+      visitRowHtml: "",
       detailVisible: false,
       hasOpenLatest: false,
     };
@@ -273,7 +275,9 @@ function pageProbe(invokeRoutes) {
     const latest = document.getElementById("btnOpenLatest");
     out.detailVisible = !!detail && detail.style.display !== "none";
     out.sourcesText = sources ? sources.textContent : "";
+    out.sourcesRowHtml = (document.querySelector("#workSources [data-open-url]") || {}).outerHTML || "";
     out.visitsText = visits ? visits.textContent : "";
+    out.visitRowHtml = (document.querySelector("#recordsContainer [data-url]") || {}).outerHTML || "";
     out.hasOpenLatest = !!latest && latest.style.display !== "none";
     const wl = document.getElementById("watchlist");
     out.watchlistText = wl ? wl.textContent : "";
@@ -423,6 +427,20 @@ async function main() {
     probe.sourcesText.includes(SEED_VISIT_URL_A) &&
       probe.sourcesText.includes(SEED_VISIT_URL_B),
     "work detail did not render each source's latest address",
+  );
+  // 来源行的 HTML 形状（类名与字段顺序）由视图模型决定，抽出来后必须一字不变。
+  expect(
+    /<div class="data-item" data-open-url="[^"]+">\s*<div class="item-body">\s*<div class="item-title">\s*<span class="badge" style="border-color:#[0-9a-f]+; color:#[0-9a-f]+">[^<]+<\/span>\s*<span class="badge">[^<]+<\/span>\s*<\/div>\s*<div class="item-meta">\s*<span>\d+ 次访问<\/span>\s*<span>[^<]*<\/span>\s*<span class="item-url">[^<]*<\/span>/.test(
+      probe.sourcesRowHtml,
+    ),
+    "renderer did not render the source row as before: " + probe.sourcesRowHtml,
+  );
+  // 访问行的 HTML 形状同样由视图模型决定。
+  expect(
+    /<div class="data-item" data-url="[^"]+">\s*<input type="checkbox" class="rec-checkbox" data-action="rec-select" data-id="[^"]+"[^>]*>\s*<div class="item-body">\s*<div class="item-title">[^<]*<\/div>\s*<div class="item-meta">\s*<span class="badge" style="border-color:#[0-9a-f]+; color:#[0-9a-f]+">[^<]+<\/span>\s*<span class="badge">[^<]+<\/span>\s*<span>[^<]+<\/span>\s*<span>停留 [^<]+<\/span>\s*<span class="item-url">[^<]*<\/span>/.test(
+      probe.visitRowHtml,
+    ),
+    "renderer did not render the visit row as before: " + probe.visitRowHtml,
   );
   expect(
     probe.visitsText.includes(SEED_VISIT_URL_A) &&

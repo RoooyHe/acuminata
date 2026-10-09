@@ -120,53 +120,49 @@ function renderWatchlist() {
     .join("");
 }
 
+// 行内容由 shared/works-view.js 算好，这里只把它画出来。
 function renderRecords() {
   const container = document.getElementById("recordsContainer");
+  const view = window.worksView.buildWorkDetailView({
+    visits: records,
+    query: searchQuery,
+    watchlist,
+  });
 
-  let filtered = records;
-  if (searchQuery) {
-    filtered = filtered.filter((r) => window.sharedUtils.matchesSearch(r, searchQuery));
-  }
-
-  if (filtered.length === 0) {
-    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${searchQuery ? "未发现匹配的访问" : "这部作品暂无访问"}</div>`;
+  if (view.visits.length === 0) {
+    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${view.visitsEmptyText}</div>`;
     return;
   }
 
-  let html = "";
-  let currentGroup = "";
-  filtered.forEach((r) => {
-    const dateLabel = dateGroupLabel(r.timestamp);
-    if (dateLabel !== currentGroup) {
-      currentGroup = dateLabel;
-      html += `<div class="date-group-header">${dateLabel}</div>`;
-    }
-    const color = getDomainColor(r.matchedRule);
-    const isPinned = r.pinned ? true : false;
-    const edition = r.edition
-      ? `<span class="badge">${escapeHtml(r.edition)}</span>`
-      : "";
-    html += `
+  container.innerHTML = view.visits
+    .map((r) => {
+      const groupHeader = r.groupLabel
+        ? `<div class="date-group-header">${r.groupLabel}</div>`
+        : "";
+      const edition = r.edition
+        ? `<span class="badge">${escapeHtml(r.edition)}</span>`
+        : "";
+      return `${groupHeader}
       <div class="data-item" data-url="${encodeURIComponent(r.url)}">
         <input type="checkbox" class="rec-checkbox" data-action="rec-select" data-id="${r.id}" ${selectedIds.has(r.id) ? "checked" : ""}>
         <div class="item-body">
-          <div class="item-title">${escapeHtml(r.title || r.url)}</div>
+          <div class="item-title">${escapeHtml(r.title)}</div>
           <div class="item-meta">
-            <span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(siteLabel(r.matchedRule))}</span>
+            <span class="badge" style="border-color:${r.color}; color:${r.color}">${escapeHtml(r.label)}</span>
             ${edition}
-            <span>${formatTime(r.timestamp)}</span>
-            <span>停留 ${formatDwell(r.dwellTime)}</span>
+            <span>${r.timeText}</span>
+            <span>停留 ${r.dwellText}</span>
             <span class="item-url">${escapeHtml(r.url)}</span>
           </div>
         </div>
         <div class="item-actions">
-          <button class="btn-pin-text ${isPinned ? "on" : ""}" data-action="rec-pin" data-id="${r.id}">${isPinned ? "Pinned" : "Pin"}</button>
+          <button class="btn-pin-text ${r.pinned ? "on" : ""}" data-action="rec-pin" data-id="${r.id}">${r.pinned ? "Pinned" : "Pin"}</button>
           ${
-            isPinned
+            r.pinned
               ? `
             <div class="score-group">
               <button class="score-btn" data-action="rec-score-down" data-id="${r.id}">−</button>
-              <span class="score-val">${r.score || 0}</span>
+              <span class="score-val">${r.score}</span>
               <button class="score-btn" data-action="rec-score-up" data-id="${r.id}">+</button>
             </div>
           `
@@ -175,43 +171,37 @@ function renderRecords() {
         </div>
       </div>
     `;
-  });
-  container.innerHTML = html;
-}
-
-function formatDwell(ms) {
-  if (!ms) return "—";
-  const s = Math.round(ms / 1000);
-  if (s < 60) return s + "秒";
-  const m = Math.floor(s / 60);
-  return s % 60 ? `${m}分${s % 60}秒` : `${m}分`;
+    })
+    .join("");
 }
 
 // 每个 (站点, 版本) 组合各占一行——同名版本在不同站点上必须分别显示。
 function renderWorkSources() {
   const container = document.getElementById("workSources");
-  const sources = (currentWork && currentWork.sources) || [];
-  if (sources.length === 0) {
+  const view = window.worksView.buildWorkDetailView({
+    sources: (currentWork && currentWork.sources) || [],
+    watchlist,
+  });
+  if (view.sourcesEmpty) {
     container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--muted-fg); font-size:12px">这部作品暂无来源</div>`;
     return;
   }
-  container.innerHTML = sources
+  container.innerHTML = view.sources
     .map((s) => {
-      const color = getDomainColor(s.matchedRule);
       const edition = s.edition
         ? `<span class="badge">${escapeHtml(s.edition)}</span>`
         : `<span class="badge" style="opacity:0.5">未标注版本</span>`;
       return `
-      <div class="data-item" data-open-url="${encodeURIComponent(s.lastUrl || "")}">
+      <div class="data-item" data-open-url="${encodeURIComponent(s.lastUrl)}">
         <div class="item-body">
           <div class="item-title">
-            <span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(siteLabel(s.matchedRule))}</span>
+            <span class="badge" style="border-color:${s.color}; color:${s.color}">${escapeHtml(s.label)}</span>
             ${edition}
           </div>
           <div class="item-meta">
             <span>${s.visitCount} 次访问</span>
-            <span>${s.lastVisitAt ? formatTime(s.lastVisitAt) : ""}</span>
-            <span class="item-url">${escapeHtml(s.lastUrl || "")}</span>
+            <span>${s.lastVisitText}</span>
+            <span class="item-url">${escapeHtml(s.lastUrl)}</span>
           </div>
         </div>
         <div class="item-actions"><button class="btn-pin-text">打开</button></div>
