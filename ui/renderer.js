@@ -102,7 +102,7 @@ function renderWatchlist() {
   }
   container.innerHTML = watchlist
     .map(
-      (entry, idx) => `
+      (entry) => `
     <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; border:1px solid var(--border); border-radius:6px; background:#1a1a1a">
       <div style="display:flex; align-items:center; gap:8px">
         <div style="width:8px; height:8px; border-radius:50%; background:${entry.color}"></div>
@@ -112,7 +112,7 @@ function renderWatchlist() {
       </div>
       <div style="display:flex; align-items:center; gap:12px">
         <span style="font-family:var(--font-mono); font-size:11px; color:var(--muted-fg)">${counts[entry.label || entry.domain] || 0} hits</span>
-        <button class="btn btn-ghost" onclick="removeEntry(${idx})" style="padding:2px 6px">×</button>
+        <button class="btn btn-ghost" data-action="remove-entry" data-domain="${escapeHtml(entry.domain)}" style="padding:2px 6px">×</button>
       </div>
     </div>
   `,
@@ -675,11 +675,18 @@ document.getElementById("btnAdd").onclick = async function () {
   }
 };
 
-async function removeEntry(idx) {
-  const entry = watchlist[idx];
+// 列表项只带域名，点击走容器上的委托监听，不再在渲染时绑定下标。
+document.getElementById("watchlist").onclick = function (e) {
+  const btn = e.target.closest("[data-action='remove-entry']");
+  if (btn) removeEntry(btn.dataset.domain);
+};
+
+async function removeEntry(domain) {
+  const entry = watchlist.find((w) => w.domain === domain);
+  if (!entry) return;
   if (confirm(`停止监控 ${entry.domain}？`)) {
-    await window.electronAPI.removeFromWatchlist(entry.domain);
-    watchlist.splice(idx, 1);
+    await window.electronAPI.removeFromWatchlist(domain);
+    watchlist = watchlist.filter((w) => w.domain !== domain);
     renderWatchlist();
     refreshStats();
   }
@@ -796,21 +803,37 @@ window.electronAPI.onUpdate((data) => {
   }
 });
 
+const agentInputEl = document.getElementById("agentCommandInput");
+const agentSubmitBtn = document.getElementById("btnSubmitCommand");
+const agentRunBtn = document.getElementById("btnRunAgent");
+
+// 把一次分析结果画到面板上：成功/失败的 HTML 都由 shared/agent-view.js 生成。
+function renderAnalysis(analysis) {
+  const view = window.agentView.buildAnalysisView(analysis);
+  const profileEl = document.getElementById("aiProfileText");
+  if (view.isError) profileEl.innerHTML = view.profileHtml;
+  else profileEl.textContent = view.profileText;
+  document.getElementById("aiTags").innerHTML = view.tagsHtml;
+}
+
+// 唯一触发路径：输入框回车、发送按钮、唤醒按钮都从这里进。
 async function triggerAgentWithCommand(customCommand) {
-  const inputEl = document.getElementById("agentCommandInput");
-  const btn = document.getElementById("btnSubmitCommand");
   const consoleBox = document.getElementById("agent-console-box");
+  const command =
+    typeof customCommand === "string" ? customCommand.trim() : "";
 
   // UI 状态锁定
-  inputEl.disabled = true;
-  btn.disabled = true;
-  btn.innerHTML = "⏳";
+  agentInputEl.disabled = true;
+  agentSubmitBtn.disabled = true;
+  agentSubmitBtn.innerHTML = "⏳";
+  agentRunBtn.style.opacity = "0.7";
+  agentRunBtn.style.pointerEvents = "none";
 
   // 清空上一次的记录，并把用户的输入打印到终端上
   if (consoleBox) {
     consoleBox.innerHTML = "";
-    if (customCommand) {
-      consoleBox.innerHTML += `<div style='color: #fff; font-size: 12px; margin-bottom: 8px;'>➜ ${escapeHtml(customCommand)}</div>`;
+    if (command) {
+      consoleBox.innerHTML += `<div style='color: #fff; font-size: 12px; margin-bottom: 8px;'>➜ ${escapeHtml(command)}</div>`;
     }
     consoleBox.innerHTML +=
       "<div style='color: #a7a7a7; font-size: 12px;'>[系统] 正在建立与大模型的链接...</div>";
@@ -821,95 +844,11 @@ async function triggerAgentWithCommand(customCommand) {
   document.getElementById("aiTags").innerHTML = "";
 
   try {
-    // 传递指令给后端（需要在 preload.js 和 main.js 中支持接收此参数）
-    const analysis =
-      await window.electronAPI.triggerAgentAnalysis(customCommand);
-
+    const analysis = await window.electronAPI.triggerAgentAnalysis(command);
+    renderAnalysis(analysis);
     if (analysis.error) {
-      document.getElementById("aiProfileText").innerHTML =
-        `<span style="color: var(--danger)">分析失败: ${escapeHtml(analysis.error)}</span>`;
-    } else {
-      document.getElementById("aiProfileText").textContent =
-        analysis.summary || "";
-      const tagsHtml = (analysis.keywords || [])
-        .map(
-          (kw) =>
-            `<span class="badge" style="border-color: var(--muted-fg); color: var(--foreground); background: var(--muted); font-size: 12px; padding: 3px 10px;">${escapeHtml(kw)}</span>`,
-        )
-        .join("");
-      document.getElementById("aiTags").innerHTML = tagsHtml;
-      loadRecommendations();
-      loadPendingActions();
-    }
-  } catch (e) {
-    showToast(String(e), "error");
-  } finally {
-    // 恢复 UI 状态
-    inputEl.disabled = false;
-    btn.disabled = false;
-    btn.innerHTML = "发送";
-    inputEl.value = ""; // 清空输入框
-    inputEl.focus();
-  }
-}
-
-// ✅ 绑定回车键事件
-document
-  .getElementById("agentCommandInput")
-  .addEventListener("keypress", function (e) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      triggerAgentWithCommand(this.value.trim());
-    }
-  });
-
-// ✅ 绑定发送按钮事件
-document.getElementById("btnSubmitCommand").onclick = function () {
-  const val = document.getElementById("agentCommandInput").value.trim();
-  triggerAgentWithCommand(val);
-};
-
-// (可选) 兼容保留原来的唤醒按钮
-const oldRunBtn = document.getElementById("btnRunAgent");
-if (oldRunBtn) {
-  oldRunBtn.onclick = () => triggerAgentWithCommand("");
-}
-
-document.getElementById("btnRunAgent").onclick = async function () {
-  const btn = this;
-  btn.innerHTML = "⏳ 模型推演中...";
-  btn.style.opacity = "0.7";
-  btn.style.pointerEvents = "none";
-
-  // ✅ 新增：每次唤醒时清空之前的终端记录，并打印初始状态
-  const consoleBox = document.getElementById("agent-console-box");
-  if (consoleBox) {
-    consoleBox.innerHTML =
-      "<div style='color: #a7a7a7; font-size: 12px;'>[系统] 正在建立与大模型的链接...</div>";
-  }
-
-  document.getElementById("aiProfileText").innerHTML =
-    "<span style='color: var(--muted-fg); font-family: var(--font-mono);'>[System] Agent is analyzing your records...</span>";
-  document.getElementById("aiTags").innerHTML = "";
-  document.getElementById("recommendationsContainer").innerHTML =
-    '<div style="padding:40px; text-align:center; color:var(--muted-fg)">正在推演中...</div>';
-
-  try {
-    const analysis = await window.electronAPI.triggerAgentAnalysis();
-    if (analysis.error) {
-      document.getElementById("aiProfileText").innerHTML =
-        `<span style="color: var(--danger)">分析失败: ${escapeHtml(analysis.error)}</span>`;
       showToast(String(analysis.error), "error");
     } else {
-      document.getElementById("aiProfileText").textContent =
-        analysis.summary || "";
-      const tagsHtml = (analysis.keywords || [])
-        .map(
-          (kw) =>
-            `<span class="badge" style="border-color: var(--muted-fg); color: var(--foreground); background: var(--muted); font-size: 12px; padding: 3px 10px;">${escapeHtml(kw)}</span>`,
-        )
-        .join("");
-      document.getElementById("aiTags").innerHTML = tagsHtml;
       loadRecommendations();
       loadPendingActions();
       showToast("Agent 报告已生成");
@@ -917,11 +856,30 @@ document.getElementById("btnRunAgent").onclick = async function () {
   } catch (e) {
     showToast(String(e), "error");
   } finally {
-    btn.innerHTML = "✨ 重新推演";
-    btn.style.opacity = "1";
-    btn.style.pointerEvents = "auto";
+    // 恢复 UI 状态
+    agentInputEl.disabled = false;
+    agentSubmitBtn.disabled = false;
+    agentSubmitBtn.innerHTML = "发送";
+    agentRunBtn.style.opacity = "1";
+    agentRunBtn.style.pointerEvents = "auto";
+    agentRunBtn.innerHTML = "✨ 重新推演";
+    agentInputEl.value = ""; // 清空输入框
+    agentInputEl.focus();
   }
-};
+}
+
+// 回车与发送按钮行为一致：都读输入框的值，走同一条路径。
+agentInputEl.addEventListener("keypress", function (e) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    triggerAgentWithCommand(this.value);
+  }
+});
+
+agentSubmitBtn.onclick = () => triggerAgentWithCommand(agentInputEl.value);
+
+// 唤醒按钮：空指令 = 默认分析；只绑定这一次。
+agentRunBtn.onclick = () => triggerAgentWithCommand("");
 
 async function loadRecommendations() {
   const container = document.getElementById("recommendationsContainer");

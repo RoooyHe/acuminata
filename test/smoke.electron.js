@@ -200,9 +200,12 @@ function pageProbe(invokeRoutes) {
       hasAPI: !!api && typeof api === "object",
       hasSharedUtils: !!window.sharedUtils && typeof window.sharedUtils.formatTime === "function",
       hasWorksView: !!window.worksView && typeof window.worksView.buildWorksView === "function",
+      hasAgentView: !!window.agentView && typeof window.agentView.buildAnalysisView === "function",
       missingRoutes: [],
       unregistered: [],
       watchlistText: "",
+      watchlistRemoveDomain: "",
+      watchlistRemoveInline: false,
       worksText: "",
       worksRowHtml: "",
       ambiguousText: "",
@@ -274,6 +277,14 @@ function pageProbe(invokeRoutes) {
     out.hasOpenLatest = !!latest && latest.style.display !== "none";
     const wl = document.getElementById("watchlist");
     out.watchlistText = wl ? wl.textContent : "";
+    // AC3：列表项带稳定的 domain 键，且不带渲染时绑定的内联 handler。
+    const removeBtn = document.querySelector(
+      "#watchlist [data-action='remove-entry']",
+    );
+    out.watchlistRemoveDomain = removeBtn ? removeBtn.dataset.domain || "" : "";
+    out.watchlistRemoveInline = removeBtn
+      ? /onclick=/i.test(removeBtn.outerHTML)
+      : false;
 
     // Round-trip every route. A missing handler rejects with distinctive text;
     // channels that need arguments may reject with a handler-level error, which
@@ -353,6 +364,15 @@ async function main() {
   expect(
     probe.hasWorksView,
     "window.worksView was not provided by the shared works-view <script>",
+  );
+  expect(
+    probe.hasAgentView,
+    "window.agentView was not provided by the shared agent-view <script>",
+  );
+  expect(
+    probe.watchlistRemoveDomain.length > 0 && !probe.watchlistRemoveInline,
+    "watchlist row does not expose a delegated remove key: " +
+      probe.watchlistRemoveDomain,
   );
   expect(
     probe.missingRoutes.length === 0,
