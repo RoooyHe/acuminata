@@ -1,7 +1,4 @@
 import type { WatchlistEntry, HistoryRecord } from "../shared/types"
-import { createAIProviders } from "../agent/providers"
-import { buildAnalysisPrompt } from "../agent/prompts"
-import { analyzePrompt } from "../agent/analysis-pipeline"
 import { TabTracker } from "./tab-tracker"
 import { WsTransport } from "./ws-transport"
 
@@ -13,41 +10,6 @@ let watchlist: WatchlistEntry[] = []
 let enabled = true
 let records: HistoryRecord[] = []
 let mode: Mode = "ws"
-
-let aiProvider = "ollama"
-let aiEndpoint = "http://127.0.0.1:11434"
-let aiApiKey = ""
-let aiModel = "qwen2.5:7b"
-
-function getAIConfig() {
-  return {
-    provider: aiProvider,
-    endpoint: aiEndpoint,
-    apiKey: aiApiKey,
-    model: aiModel,
-  }
-}
-
-// Browser transport for agent/providers.js
-async function browserHttpRequest(urlStr: string, options: { method?: string; headers?: Record<string, string>; body?: string }, timeout = 60000) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeout)
-  try {
-    const res = await fetch(urlStr, {
-      method: options.method || "POST",
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-      body: options.body,
-      signal: controller.signal,
-    })
-    const text = await res.text()
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`)
-    return { status: res.status, data: text }
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-const aiProviders = createAIProviders(getAIConfig, browserHttpRequest)
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
@@ -79,7 +41,7 @@ function matchesWatchlist(url: string): WatchlistEntry | null {
 
 async function saveLocal() {
   try {
-    await chrome.storage.local.set({ watchlist, enabled, records, mode, aiProvider, aiEndpoint, aiApiKey, aiModel })
+    await chrome.storage.local.set({ watchlist, enabled, records, mode })
   } catch (e) {
     // ignore
   }
@@ -92,28 +54,23 @@ async function loadLocal() {
       "enabled",
       "records",
       "mode",
-      "aiProvider",
-      "aiEndpoint",
-      "aiApiKey",
-      "aiModel",
     ])
     watchlist = (result.watchlist as WatchlistEntry[]) || []
     enabled = result.enabled !== false
     records = (result.records as HistoryRecord[]) || []
     mode = (result.mode as Mode) || "ws"
-    aiProvider = (result.aiProvider as string) || "ollama"
-    aiEndpoint = (result.aiEndpoint as string) || "http://127.0.0.1:11434"
-    aiApiKey = (result.aiApiKey as string) || ""
-    aiModel = (result.aiModel as string) || "qwen2.5:7b"
   } catch (e) {
     watchlist = []
     enabled = true
     records = []
     mode = "ws"
-    aiProvider = "ollama"
-    aiEndpoint = "http://127.0.0.1:11434"
-    aiApiKey = ""
-    aiModel = "qwen2.5:7b"
+  }
+  // 扩展不再持有 AI 配置；清掉旧版本留下的 provider 与 API key。
+  // 单独兜底：清理失败不能把已载入的状态清掉。
+  try {
+    await chrome.storage.local.remove(["aiProvider", "aiEndpoint", "aiApiKey", "aiModel"])
+  } catch (e) {
+    // ignore
   }
 }
 
@@ -251,24 +208,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
     }
     sendResponse({ success: true })
-  } else if ((msg as { type: string }).type === "GET_AI_CONFIG") {
-    sendResponse({ provider: aiProvider, endpoint: aiEndpoint, apiKey: aiApiKey ? "●●●●" + aiApiKey.slice(-4) : "", model: aiModel })
-  } else if ((msg as { type: string }).type === "SET_AI_CONFIG") {
-    const cfg = msg as { provider?: string; endpoint?: string; apiKey?: string; model?: string }
-    if (cfg.provider) aiProvider = cfg.provider
-    if (cfg.endpoint) aiEndpoint = cfg.endpoint
-    if (cfg.apiKey && !cfg.apiKey.startsWith("●●●●")) aiApiKey = cfg.apiKey
-    if (cfg.model) aiModel = cfg.model
-    saveLocal()
-    sendResponse({ success: true })
-  } else if ((msg as { type: string }).type === "AI_ANALYZE") {
-    const prompt = buildAnalysisPrompt(records, watchlist)
-    analyzePrompt(aiProviders, prompt).then((result) => {
-      sendResponse(result)
-    }).catch((e) => {
-      sendResponse({ error: String(e) })
-    })
-    return true
   }
   return true
 })

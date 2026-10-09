@@ -147,6 +147,7 @@ const {
 } = require("./executor");
 
 const { analysisFromReply } = require("./analysis-pipeline");
+const { buildAnalysisMessages, buildAutoCleanMessages } = require("./prompts");
 
 async function triggerAnalysis(store, providers, executeTool, customCommand) {
   try {
@@ -155,40 +156,11 @@ async function triggerAnalysis(store, providers, executeTool, customCommand) {
       return { error: "No high-value records to analyze.", keywords: [], summary: "" };
     }
 
-    const sysMsg = `You are a private content recommendation expert. You have access to tools to explore the user's browsing history. Use them to gain deeper insights.
+    const messages = buildAnalysisMessages(records, store.getWatchlist());
+    const [sysMsg, userMsg] = messages;
 
-First, call search_records to sample recent records across different domains.
-Then call get_statistics to understand the distribution.
-Finally, call get_agent_profile to incorporate past learnings.
-
-After gathering data, produce a final analysis as a JSON object:
-{ "summary": "One sentence summary of user preferences in the user's language", "keywords": ["keyword1", "keyword2", ...] }
-
-Always respond in the same language as the user's records. Be concise.`;
-
-    const watchlist = store.getWatchlist();
-    const ruleToLabel = {};
-    watchlist.forEach((w) => {
-      ruleToLabel[w.domain] = w.label || w.domain;
-    });
-
-    const recordSummary = records
-      .slice(0, 10)
-      .map((r) => {
-        const label = ruleToLabel[r.matchedRule] || r.matchedRule;
-        return `[${label}] ${(r.title || "").slice(0, 80)} (score:${r.score || 0})`;
-      })
-      .join("\n");
-
-    const userMsg = `User has ${records.length} high-value records. Sample:\n${recordSummary}\n\nAnalyze their preferences thoroughly using the available tools.`;
-
-    const messages = [
-      { role: "system", content: sysMsg },
-      { role: "user", content: userMsg },
-    ];
-
-    const convId = store.createConversation("analysis", sysMsg);
-    store.insertMessage(convId, 0, "user", userMsg, null, null);
+    const convId = store.createConversation("analysis", sysMsg.content);
+    store.insertMessage(convId, 0, "user", userMsg.content, null, null);
 
     const { result, pendingActions } = await agentLoop(
       messages,
@@ -227,22 +199,11 @@ async function autoClean(store, providers, executeTool) {
     const stats = executeTool("get_statistics", {});
     const watchlistData = executeTool("get_watchlist", {});
 
-    const sysMsg = `You are a browsing history cleaning assistant. Analyze the user's data and identify records that should be cleaned up. Consider three scenarios:
-1. Dead domains: domains in watchlist that have no records in the last 7 days
-2. Regex mismatches: records that exist under a group but don't match any active regex filter
-3. Low-engagement: records that are not pinned, have score 0 or NULL, and were created more than 14 days ago
+    const messages = buildAutoCleanMessages(stats, watchlistData, profile);
+    const [sysMsg, userMsg] = messages;
 
-Suggest deletions by calling the delete_records tool for junk records, and update_regex_rule if filters need tightening.`;
-
-    const userMsg = `Current statistics: ${JSON.stringify(stats)}\nWatchlist: ${JSON.stringify(watchlistData)}\nUser anti-patterns: ${JSON.stringify(profile.antiPatterns)}\n\nPlease scan the records and suggest cleanup actions.`;
-
-    const messages = [
-      { role: "system", content: sysMsg },
-      { role: "user", content: userMsg },
-    ];
-
-    const convId = store.createConversation("auto_clean", sysMsg);
-    store.insertMessage(convId, 0, "user", userMsg, null, null);
+    const convId = store.createConversation("auto_clean", sysMsg.content);
+    store.insertMessage(convId, 0, "user", userMsg.content, null, null);
 
     const { result, pendingActions } = await agentLoop(
       messages,

@@ -459,12 +459,6 @@ function OptionsIndex() {
     msg: string
     type: "success" | "error"
   } | null>(null)
-  const [aiProvider, setAiProvider] = useState("ollama")
-  const [aiEndpoint, setAiEndpoint] = useState("http://127.0.0.1:11434")
-  const [aiApiKey, setAiApiKey] = useState("")
-  const [aiModel, setAiModel] = useState("qwen2.5:7b")
-  const [aiLoading, setAiLoading] = useState(false)
-  const [aiResult, setAiResult] = useState<{ summary: string; keywords: string[] } | null>(null)
 
   useEffect(() => {
     loadData()
@@ -476,19 +470,11 @@ function OptionsIndex() {
       "records",
       "enabled",
       "mode",
-      "aiProvider",
-      "aiEndpoint",
-      "aiApiKey",
-      "aiModel",
     ])
     setWatchlist((data.watchlist as WatchlistEntry[]) || [])
     setRecords((data.records as HistoryRecord[]) || [])
     setEnabled(data.enabled !== false)
     setMode((data.mode as string) || "ws")
-    setAiProvider((data.aiProvider as string) || "ollama")
-    setAiEndpoint((data.aiEndpoint as string) || "http://127.0.0.1:11434")
-    setAiApiKey((data.aiApiKey as string) || "")
-    setAiModel((data.aiModel as string) || "qwen2.5:7b")
   }
 
   function showToast(msg: string, type: "success" | "error") {
@@ -608,28 +594,6 @@ function OptionsIndex() {
       newMode === "ws" ? "已切换至 WebSocket 模式" : "已切换至本地模式",
       "success",
     )
-  }
-
-  async function saveAiConfig() {
-    await chrome.storage.local.set({ aiProvider, aiEndpoint, aiApiKey, aiModel })
-    chrome.runtime.sendMessage({ type: "SET_AI_CONFIG", provider: aiProvider, endpoint: aiEndpoint, apiKey: aiApiKey, model: aiModel })
-    showToast("AI 配置已保存", "success")
-  }
-
-  async function runAnalysis() {
-    setAiLoading(true)
-    setAiResult(null)
-    try {
-      const res = await chrome.runtime.sendMessage({ type: "AI_ANALYZE" })
-      if (res.error) {
-        showToast(String(res.error), "error")
-      } else {
-        setAiResult({ summary: res.summary || "", keywords: res.keywords || [] })
-      }
-    } catch (e) {
-      showToast(String(e), "error")
-    }
-    setAiLoading(false)
   }
 
   function renderRecordsList() {
@@ -914,49 +878,6 @@ function OptionsIndex() {
             </div>
           </div>
 
-          {/* AI Configuration */}
-          <div style={s.card}>
-            <div style={s.sectionHeader}>AI 配置</div>
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-              <select
-                className="search-input"
-                style={{ ...s.input, flex: "0 0 140px" }}
-                value={aiProvider}
-                onChange={(e) => setAiProvider(e.target.value)}>
-                <option value="ollama">Ollama</option>
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-              </select>
-              <input
-                type="text"
-                className="search-input"
-                style={s.input}
-                placeholder="Endpoint"
-                value={aiEndpoint}
-                onChange={(e) => setAiEndpoint(e.target.value)}
-              />
-              <input
-                type="password"
-                className="search-input"
-                style={s.input}
-                placeholder="API Key"
-                value={aiApiKey}
-                onChange={(e) => setAiApiKey(e.target.value)}
-              />
-              <input
-                type="text"
-                className="search-input"
-                style={s.input}
-                placeholder="Model"
-                value={aiModel}
-                onChange={(e) => setAiModel(e.target.value)}
-              />
-              <button style={s.btn} onClick={saveAiConfig}>
-                保存配置
-              </button>
-            </div>
-          </div>
-
           {/* Data Management */}
           <div style={s.card}>
             <div style={s.sectionHeader}>数据管理</div>
@@ -973,39 +894,7 @@ function OptionsIndex() {
 
         {/* Records */}
         <div style={{ marginTop: 40 }}>
-          <div style={{ ...s.title, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <span>监控的历史 · {records.length}</span>
-            <button
-              style={{ ...s.btn, opacity: aiLoading ? 0.6 : 1 }}
-              onClick={runAnalysis}
-              disabled={aiLoading || records.length === 0}>
-              {aiLoading ? "分析中..." : "AI 分析"}
-            </button>
-          </div>
-
-          {aiResult && (
-            <div style={{ ...s.card, marginBottom: 16 }}>
-              <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: aiResult.keywords.length > 0 ? 12 : 0, color: "var(--foreground)" }}>
-                {aiResult.summary}
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {aiResult.keywords.map((kw, i) => (
-                  <span
-                    key={i}
-                    style={{
-                      ...s.badge,
-                      color: "var(--foreground)",
-                      borderColor: "var(--foreground)",
-                      background: "var(--muted)",
-                      fontSize: 11,
-                      padding: "3px 10px",
-                    }}>
-                    {kw}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+          <div style={s.title}>监控的历史 · {records.length}</div>
 
           <div style={s.toolbar}>
             <input

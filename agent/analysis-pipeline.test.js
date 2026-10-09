@@ -6,7 +6,7 @@
 
 const assert = require("assert");
 const { createAIProviders } = require("./providers");
-const { analyzePrompt, reflectPrompt } = require("./analysis-pipeline");
+const { analysisFromReply, reflectPrompt } = require("./analysis-pipeline");
 
 function providersReturning(raw) {
   return createAIProviders(
@@ -15,15 +15,17 @@ function providersReturning(raw) {
   );
 }
 
+// 与 ipc-dispatcher 的 triggerAnalysis 一样：拿模型回复走同一条抽取与降级。
+function analyzeReply(raw) {
+  return analysisFromReply(providersReturning(raw), raw);
+}
+
 async function runTests() {
   console.log("\n── agent/analysis-pipeline.js tests ──\n");
 
   // 1. 合法 JSON
   {
-    const analysis = await analyzePrompt(
-      providersReturning('{"summary":"喜欢悬疑","keywords":["悬疑","推理"]}'),
-      "prompt",
-    );
+    const analysis = analyzeReply('{"summary":"喜欢悬疑","keywords":["悬疑","推理"]}');
     assert.strictEqual(analysis.summary, "喜欢悬疑", "解析出 summary");
     assert.deepStrictEqual(analysis.keywords, ["悬疑", "推理"], "解析出 keywords");
     console.log("  ✓ 合法 JSON：直接解析");
@@ -31,10 +33,7 @@ async function runTests() {
 
   // 2. 带围栏的 JSON
   {
-    const analysis = await analyzePrompt(
-      providersReturning('```json\n{"summary":"围栏里的","keywords":["a"]}\n```'),
-      "prompt",
-    );
+    const analysis = analyzeReply('```json\n{"summary":"围栏里的","keywords":["a"]}\n```');
     assert.strictEqual(analysis.summary, "围栏里的", "围栏也能剥开");
     assert.deepStrictEqual(analysis.keywords, ["a"], "围栏里 keywords 也在");
     console.log("  ✓ 带围栏的 JSON：剥围栏后解析");
@@ -43,7 +42,7 @@ async function runTests() {
   // 3. 纯文本：降级成截断文本
   {
     const raw = "  " + "啰".repeat(300);
-    const analysis = await analyzePrompt(providersReturning(raw), "prompt");
+    const analysis = analyzeReply(raw);
     assert.strictEqual(analysis.summary, raw.slice(0, 200), "纯文本降级为截断文本");
     assert.deepStrictEqual(analysis.keywords, [], "降级后 keywords 为空");
     console.log("  ✓ 纯文本：降级为截断文本");

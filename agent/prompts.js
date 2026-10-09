@@ -1,47 +1,70 @@
 // Agent prompt builders — pure functions, no side effects.
-// Both main.js and extend/background.ts should import from here.
+// 所有模型提示词的构建处（见 docs/adr/0009）：兴趣归纳、自动清理、
+// 删除反思、拒绝推荐都在这里。核对「提示词带了哪些字段」只看这个文件；
+// 工具结果另见 agent/tools.js。扩展不再自行拼接提示词或直连模型。
 
 /**
- * Build the analysis prompt for the agent.
- * @param {Array<{title?:string, matchedRule:string, score?:number|null, pinned?:number}>} records
- * @param {Array<{domain:string, label?:string, regexFilter?:string, regexTarget?:string}>} watchlist
- * @returns {string}
+ * Build the tool-driven interest-analysis messages for the agent loop.
+ * The analysis prompt half of the outgoing boundary (see docs/adr/0009);
+ * tool results are declared separately in agent/tools.js.
+ * @param {Array<{title?:string, matchedRule:string, score?:number|null}>} records
+ * @param {Array<{domain:string, label?:string}>} watchlist
+ * @returns {Array<{role:string, content:string}>}
  */
-function buildAnalysisPrompt(records, watchlist) {
+function buildAnalysisMessages(records, watchlist) {
   const ruleToLabel = {};
   watchlist.forEach((w) => {
     ruleToLabel[w.domain] = w.label || w.domain;
   });
 
-  const recordItems = records.map((r) => {
-    const label = ruleToLabel[r.matchedRule] || r.matchedRule;
-    const title = (r.title || "").slice(0, 80);
-    const score = r.score || 0;
-    const pinned = r.pinned ? "★" : "";
-    return `- [${label}] ${title} (分数:${score} ${pinned})`;
-  });
+  const recordSummary = records
+    .slice(0, 10)
+    .map((r) => {
+      const label = ruleToLabel[r.matchedRule] || r.matchedRule;
+      return `[${label}] ${(r.title || "").slice(0, 80)} (score:${r.score || 0})`;
+    })
+    .join("\n");
 
-  const patterns = [];
-  watchlist.forEach((w) => {
-    if (w.regexFilter && w.regexFilter.trim()) {
-      patterns.push(
-        `  - ${w.label || w.domain}: ${w.regexFilter} (${w.regexTarget})`,
-      );
-    }
-  });
+  const sysMsg = `You are a private content recommendation expert. You have access to tools to explore the user's browsing history. Use them to gain deeper insights.
 
-  return (
-    "你是一个私人的内容推荐专家。以下是我近期高分收藏的视频记录：\n" +
-    recordItems.join("\n") +
-    "\n\n" +
-    (patterns.length > 0
-      ? "我关注的内容模式（正则匹配规则）：\n" + patterns.join("\n") + "\n\n"
-      : "") +
-    "请执行以下任务：\n" +
-    " 1. 用一句话总结我的内容偏好。\n" +
-    " 2. 推测 5 个我目前还未看过，但极大概率会感兴趣的相关系列、标签或具体搜索关键词。\n" +
-    '   请严格按照 JSON 格式返回结果：{ "summary": "...", "keywords": ["...", "..."] }'
-  );
+First, call search_records to sample recent records across different domains.
+Then call get_statistics to understand the distribution.
+Finally, call get_agent_profile to incorporate past learnings.
+
+After gathering data, produce a final analysis as a JSON object:
+{ "summary": "One sentence summary of user preferences in the user's language", "keywords": ["keyword1", "keyword2", ...] }
+
+Always respond in the same language as the user's records. Be concise.`;
+
+  const userMsg = `User has ${records.length} high-value records. Sample:\n${recordSummary}\n\nAnalyze their preferences thoroughly using the available tools.`;
+
+  return [
+    { role: "system", content: sysMsg },
+    { role: "user", content: userMsg },
+  ];
+}
+
+/**
+ * Build the tool-driven cleanup messages for the agent loop.
+ * @param {object} stats
+ * @param {object} watchlistData
+ * @param {{antiPatterns?:Array}} profile
+ * @returns {Array<{role:string, content:string}>}
+ */
+function buildAutoCleanMessages(stats, watchlistData, profile) {
+  const sysMsg = `You are a browsing history cleaning assistant. Analyze the user's data and identify records that should be cleaned up. Consider three scenarios:
+1. Dead domains: domains in watchlist that have no records in the last 7 days
+2. Regex mismatches: records that exist under a group but don't match any active regex filter
+3. Low-engagement: records that are not pinned, have score 0 or NULL, and were created more than 14 days ago
+
+Suggest deletions by calling the delete_records tool for junk records, and update_regex_rule if filters need tightening.`;
+
+  const userMsg = `Current statistics: ${JSON.stringify(stats)}\nWatchlist: ${JSON.stringify(watchlistData)}\nUser anti-patterns: ${JSON.stringify(profile.antiPatterns)}\n\nPlease scan the records and suggest cleanup actions.`;
+
+  return [
+    { role: "system", content: sysMsg },
+    { role: "user", content: userMsg },
+  ];
 }
 
 /**
@@ -98,7 +121,8 @@ function buildRejectReflectionPrompt(rec, sampleKept) {
 }
 
 module.exports = {
-  buildAnalysisPrompt,
+  buildAnalysisMessages,
+  buildAutoCleanMessages,
   buildDeleteReflectionPrompt,
   buildRejectReflectionPrompt,
 };
