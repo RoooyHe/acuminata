@@ -199,10 +199,12 @@ function pageProbe(invokeRoutes) {
     const out = {
       hasAPI: !!api && typeof api === "object",
       hasSharedUtils: !!window.sharedUtils && typeof window.sharedUtils.formatTime === "function",
+      hasWorksView: !!window.worksView && typeof window.worksView.buildWorksView === "function",
       missingRoutes: [],
       unregistered: [],
       watchlistText: "",
       worksText: "",
+      worksRowHtml: "",
       ambiguousText: "",
       backfillText: "",
       worksHealthText: "",
@@ -228,6 +230,7 @@ function pageProbe(invokeRoutes) {
     };
     while (!worksRendered() && Date.now() < deadline) await sleep(50);
     out.worksText = (document.getElementById("worksContainer") || {}).textContent || "";
+    out.worksRowHtml = (document.querySelector("#worksContainer [data-work-id]") || {}).outerHTML || "";
     out.ambiguousText = (document.getElementById("ambiguousWorks") || {}).textContent || "";
 
     // 「未归类」是一个可浏览的分组：点开它，未归属的访问要列出来。
@@ -348,6 +351,10 @@ async function main() {
     "window.sharedUtils was not provided by the shared utils <script>",
   );
   expect(
+    probe.hasWorksView,
+    "window.worksView was not provided by the shared works-view <script>",
+  );
+  expect(
     probe.missingRoutes.length === 0,
     "routes missing from electronAPI: " + probe.missingRoutes.join(", "),
   );
@@ -370,6 +377,13 @@ async function main() {
   expect(
     probe.worksText.includes("B站"),
     "renderer did not render the work's site",
+  );
+  // 行的 HTML 形状（类名与字段顺序）由视图模型决定，抽出来后必须一字不变。
+  expect(
+    /<div class="data-item" data-work-id="[^"]+">\s*<div class="item-body">\s*<div class="item-title">[^<]*<\/div>\s*<div class="item-meta">\s*<span class="badge">\d+ 分<\/span>\s*<span>\d+ 个来源<\/span>\s*<span>\d+ 次访问<\/span>/.test(
+      probe.worksRowHtml,
+    ),
+    "renderer did not render the work row as before: " + probe.worksRowHtml,
   );
   expect(
     probe.ambiguousText.includes("SMOKE 歧义甲") &&
