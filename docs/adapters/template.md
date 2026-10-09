@@ -182,8 +182,15 @@
 这要求 `parse` 是**已存原始字段的纯函数**：
 
 - 内置字段（`url` / `title` / `description` / `ogImage` / `favIconUrl`）今天已经存在 `records` 里 ✅
-- `collect` 抽到的字段**今天没有地方存** ❌ → `records` 需要一个 JSON 原始列把它们留下来
+- 扩展回传的采集结果存在 `records.pageSignature`（页面签名）与 `records.pageFields`（各适配器 collect 的字段）里 ✅
 
+`WorkStore.reparseWorks()` 是一次**显式操作**：清空作品的派生结果
+（`workId` / `works` / `work_keys` / `work_ambiguities`），再把每条已有访问交给与实时
+上报同一条 `identityKeysFor → recordWorkVisit` 通道重算——没有第二套解析。
+界面上是作品视图的「重新解析历史」按钮，IPC 是 `works:reparse`。
+
+重跑是**全历史**：已归属的访问也按当前适配器重算（不只是未归属的）。
+作品代理键会重生成，但分组、分数、身份键与存的原始字段都不变（幂等）。
 漏掉这一条，「用户自己写适配器」这个模式的另一半价值（修一次，全历史受益）就没了。
 
 ## 归一化不属于适配器
@@ -213,5 +220,5 @@ detect 与 collect 要 DOM，所以住在 `shared/page-collect.js`：扩展用
 跑真实页面夹具。**认平台由桌面端决定**（`detectBySignature`）——扩展只回传页面签名
 （`pageSignature`）与各适配器 collect 抽到的字段（`pageFields`），判定只有一处。
 
-仍未接上：把用户适配器接上、并在健康度里报告失效是 #28；采集字段落库、
-改一次适配器能重跑全历史是 #27。
+仍未接上：把用户适配器接上、并在健康度里报告失效是 #28。
+采集字段落库（`records.pageSignature` / `records.pageFields`）与「重新解析历史」是 #27。

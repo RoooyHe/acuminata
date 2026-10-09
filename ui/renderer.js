@@ -491,23 +491,30 @@ document.getElementById("btnBackToWorks").onclick = function () {
   document.getElementById("workDetailView").style.display = "none";
 };
 
-// --- 历史回填（issue #6）：把已有访问归入作品，进度与前后计数都摆在界面上 ---
-let backfillRunning = false;
+// --- 历史回填 / 重新解析（issue #6 / #27）：把已有访问归入作品，进度与前后计数都摆在界面上 ---
+let worksJobRunning = false;
 
 function setBackfillStatus(text) {
   const el = document.getElementById("worksBackfillStatus");
   if (el) el.textContent = text;
 }
 
-document.getElementById("btnWorksBackfill").onclick = async function () {
-  if (backfillRunning) return;
-  backfillRunning = true;
-  this.disabled = true;
-  const before = health ? health.unattributedCount : 0;
-  setBackfillStatus(`回填中… 0 / ${before}`);
+// 回填只补未归属的；重新解析连已归属的一起重算（改一次适配器，全历史受益）。
+// 两者是同一条通道、同一份结果形状，界面上只差一个名字。
+const worksJobLabel = (op) => (op === "reparse" ? "重新解析" : "回填");
+
+async function runWorksJob(op, call) {
+  if (worksJobRunning) return;
+  const label = worksJobLabel(op);
+  const button = document.getElementById(
+    op === "reparse" ? "btnWorksReparse" : "btnWorksBackfill",
+  );
+  worksJobRunning = true;
+  button.disabled = true;
+  setBackfillStatus(`${label}中…`);
   try {
-    const r = await window.electronAPI.backfillWorks();
-    let text = `回填完成：未归属 ${r.before} → ${r.remaining} 条，归入 ${r.assigned} 条访问，新建 ${r.created} 部作品`;
+    const r = await call();
+    let text = `${label}完成：未归属 ${r.before} → ${r.remaining} 条，归入 ${r.assigned} 条访问，新建 ${r.created} 部作品`;
     // 剩下的不是失败：那些访问没有可用的身份键，或身份键指向多部作品。
     if (r.remaining > 0) text += `；${r.remaining} 条没有可用的身份键`;
     if (r.ambiguous > 0) text += `；${r.ambiguous} 条身份键有冲突`;
@@ -517,12 +524,18 @@ document.getElementById("btnWorksBackfill").onclick = async function () {
     renderWorksSiteBar();
     await loadWorks(1);
   } catch (e) {
-    setBackfillStatus(`回填失败：${(e && e.message) || e}`);
+    setBackfillStatus(`${label}失败：${(e && e.message) || e}`);
   } finally {
-    backfillRunning = false;
-    this.disabled = false;
+    worksJobRunning = false;
+    button.disabled = false;
   }
-};
+}
+
+document.getElementById("btnWorksBackfill").onclick = () =>
+  runWorksJob("backfill", () => window.electronAPI.backfillWorks());
+
+document.getElementById("btnWorksReparse").onclick = () =>
+  runWorksJob("reparse", () => window.electronAPI.reparseWorks());
 
 // --- 事件监听 ---
 document.querySelectorAll(".nav-item").forEach((item) => {
@@ -834,7 +847,7 @@ window.electronAPI.onUpdate((data) => {
     renderAdapterHealth();
     renderAmbiguousWorks();
   } else if (data.type === "worksBackfilledProgress") {
-    setBackfillStatus(`回填中… ${data.processed} / ${data.before}`);
+    setBackfillStatus(`${worksJobLabel(data.op)}中… ${data.processed} / ${data.before}`);
   } else if (data.type === "agentPendingUpdated") {
     loadPendingActions();
   }

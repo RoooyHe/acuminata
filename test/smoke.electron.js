@@ -230,6 +230,7 @@ function pageProbe(invokeRoutes) {
       worksRowHtml: "",
       ambiguousText: "",
       backfillText: "",
+      reparseText: "",
       worksHealthText: "",
       unattributedText: "",
       sourcesText: "",
@@ -340,6 +341,21 @@ function pageProbe(invokeRoutes) {
       }
     }
     out.backfillText = backfillStatus ? backfillStatus.textContent : "";
+
+    // 重新解析也是同一种可观察的操作：适配器改好后点它，全历史重跑。
+    const reparseBtn = document.getElementById("btnWorksReparse");
+    if (reparseBtn) {
+      reparseBtn.click();
+      const reparseDeadline = Date.now() + 10000;
+      while (
+        backfillStatus &&
+        !/重新解析完成|重新解析失败/.test(backfillStatus.textContent) &&
+        Date.now() < reparseDeadline
+      ) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    out.reparseText = backfillStatus ? backfillStatus.textContent : "";
     return out;
   })()`;
 }
@@ -505,6 +521,10 @@ async function main() {
   expect(
     /回填完成：未归属 \d+ → \d+ 条/.test(probe.backfillText),
     "renderer did not report backfill progress/counts: " + probe.backfillText,
+  );
+  expect(
+    /重新解析完成：未归属 \d+ → \d+ 条/.test(probe.reparseText),
+    "renderer did not report reparse progress/counts: " + probe.reparseText,
   );
   expect(
     wsVisit.count === 1,
