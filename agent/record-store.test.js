@@ -99,6 +99,13 @@ async function runTests() {
   assert(typeof stats.total === "number", "Stats has total");
   assert(typeof stats.today === "number", "Stats has today");
   assert(typeof stats.domainCounts === "object", "Stats has domainCounts");
+  const ruleStats = store.getRuleStats();
+  assert(typeof ruleStats.total === "number", "Rule stats have total");
+  assert(
+    typeof ruleStats.stats === "object" &&
+      Object.values(ruleStats.stats).every((c) => typeof c === "number"),
+    "Rule stats map matchedRule to counts",
+  );
 
   // Test 9: Agent Profile
   console.log("\nTest: Agent Profile");
@@ -126,6 +133,26 @@ async function runTests() {
   store.resolvePendingAction(pending[0].id, "approved");
   const afterResolve = store.getPendingActions();
   assert(afterResolve.length === 0, "Pending actions cleared after resolve");
+
+  // 批量路径自带广播：入队一次、裁决一次，空批次不广播。
+  {
+    const events = [];
+    const s2 = new RecordStore(TEST_DB, (type, data) => events.push({ type, data }));
+    await s2.init();
+    const pendingEvents = () => events.filter((e) => e.type === "agentPendingUpdated").length;
+    const before = pendingEvents();
+    s2.insertPendingActions("conv-b", []);
+    assert(pendingEvents() === before, "空批次不广播");
+    s2.insertPendingActions("conv-b", [
+      { tool: "t1", args: { a: 1 } },
+      { tool: "t2", args: { b: 2 } },
+    ]);
+    assert(pendingEvents() === before + 1, "批量入队广播一次队列现状");
+    assert(s2.getPendingActions().length === 2, "两条动作都入队了");
+    s2.resolvePendingActions(s2.getPendingActions().map((a) => a.id), "approved");
+    assert(pendingEvents() === before + 2, "批量裁决再广播一次");
+    assert(s2.getPendingActions().length === 0, "裁决后队列为空");
+  }
 
   // Test 12: Conversations & Messages
   console.log("\nTest: Conversations & Messages");

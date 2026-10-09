@@ -4,7 +4,7 @@
 const { shell } = require("electron");
 
 function createIPCDispatcher(ipcMain, store, deps = {}) {
-  const { providers, executeTool, getAdapterHealth } = deps;
+  const { providers, executeTool, getAdapterHealth, broadcastAgentEvent } = deps;
   const readStore = store.getAgentReadStore();
 
   ipcMain.handle("records:page", (_, page, pageSize, filter) =>
@@ -117,25 +117,23 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
       executeTool,
       store.getPendingActions.bind(store),
     );
-    for (const id of actionIds) store.resolvePendingAction(id, "approved");
-    store._emit("agentPendingUpdated", store.getPendingActions());
+    store.resolvePendingActions(actionIds, "approved");
     return results;
   });
 
   ipcMain.handle("agent:dismiss", (_, actionIds) => {
-    for (const id of actionIds) store.resolvePendingAction(id, "dismissed");
-    store._emit("agentPendingUpdated", store.getPendingActions());
+    store.resolvePendingActions(actionIds, "dismissed");
     return { dismissed: actionIds.length };
   });
 
   ipcMain.handle("agent:profile", () => store.buildAgentProfile());
 
   ipcMain.handle("agent:analyze", async (_, customCommand) => {
-    return triggerAnalysis(store, providers, executeTool, customCommand);
+    return triggerAnalysis(store, providers, executeTool, broadcastAgentEvent, customCommand);
   });
 
   ipcMain.handle("agent:auto-clean", async () => {
-    return autoClean(store, providers, executeTool);
+    return autoClean(store, providers, executeTool, broadcastAgentEvent);
   });
 }
 
@@ -149,7 +147,7 @@ const {
 const { analysisFromReply } = require("./analysis-pipeline");
 const { buildAnalysisMessages, buildAutoCleanMessages } = require("./prompts");
 
-async function triggerAnalysis(store, providers, executeTool, customCommand) {
+async function triggerAnalysis(store, providers, executeTool, broadcastAgentEvent, customCommand) {
   try {
     const records = store.extractHighValueRecords();
     if (records.length === 0) {
@@ -166,19 +164,15 @@ async function triggerAnalysis(store, providers, executeTool, customCommand) {
       messages,
       providers,
       executeTool,
-      (type, data) => store._emit(type, data),
+      broadcastAgentEvent,
       convId,
       store.insertMessage.bind(store),
     );
 
     store.completeConversation(convId, result || "");
 
-    for (const a of pendingActions) {
-      store.insertPendingAction(convId, a.tool, a.args);
-    }
-    if (pendingActions.length > 0) {
-      store._emit("agentPendingUpdated", store.getPendingActions());
-    }
+    // 入队顺带广播队列现状——队列变化的可见性归 store。
+    store.insertPendingActions(convId, pendingActions);
 
     const analysis = analysisFromReply(providers, result || "");
 
@@ -193,7 +187,7 @@ async function triggerAnalysis(store, providers, executeTool, customCommand) {
   }
 }
 
-async function autoClean(store, providers, executeTool) {
+async function autoClean(store, providers, executeTool, broadcastAgentEvent) {
   try {
     const profile = store.buildAgentProfile();
     const stats = executeTool("get_statistics", {});
@@ -209,18 +203,13 @@ async function autoClean(store, providers, executeTool) {
       messages,
       providers,
       executeTool,
-      (type, data) => store._emit(type, data),
+      broadcastAgentEvent,
       convId,
       store.insertMessage.bind(store),
     );
     store.completeConversation(convId, result || "");
 
-    for (const a of pendingActions) {
-      store.insertPendingAction(convId, a.tool, a.args);
-    }
-    if (pendingActions.length > 0) {
-      store._emit("agentPendingUpdated", store.getPendingActions());
-    }
+    store.insertPendingActions(convId, pendingActions);
 
     return { result, pendingActions };
   } catch (e) {
