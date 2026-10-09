@@ -15,6 +15,7 @@ const {
   isRepeatVisit,
   computeDailyScore,
   resolveGroup,
+  getGroupDomains,
   extractPath,
   matchesRegex,
 } = require("./cluster");
@@ -453,10 +454,7 @@ class RecordStore {
    */
   _siteRules(value) {
     if (!value || value === "all") return null;
-    const domains = this.getWatchlist()
-      .filter((w) => (w.label || w.domain) === value)
-      .map((w) => w.domain);
-    return domains.length > 0 ? domains : [value];
+    return getGroupDomains(value, this.getWatchlist(), value);
   }
 
   getRecordById(id) {
@@ -993,6 +991,38 @@ class RecordStore {
     );
 
     return { work, sources, visits };
+  }
+
+  /**
+   * 「这条访问该打开哪个地址」：分组（label 相同 = 同一站点的镜像）内
+   * **最近访问过**的镜像域名。来源解析只此一处——IPC 层只把地址交给它，
+   * 自己不查库、不拼分组。
+   *
+   * 只换域名、保留路径；认不出分组、组内只有一个域名、或地址解析不了时原样返回。
+   * @param {string} url
+   * @returns {string}
+   */
+  resolveOpenUrl(url) {
+    try {
+      const u = new URL(url);
+      const watchlist = this.getWatchlist();
+      const entry = watchlist.find(
+        (w) => w.domain === u.hostname || url.includes(w.domain),
+      );
+      if (!entry) return url;
+      const domains = getGroupDomains(entry.label || entry.domain, watchlist, entry.domain);
+      if (domains.length < 2) return url;
+      const placeholders = domains.map(() => "?").join(",");
+      const latest = this._dbGet(
+        `SELECT domain FROM records WHERE matchedRule IN (${placeholders}) ORDER BY timestamp DESC LIMIT 1`,
+        domains,
+      );
+      if (!latest || !latest.domain) return url;
+      u.hostname = latest.domain;
+      return u.toString();
+    } catch (e) {
+      return url;
+    }
   }
 
   /**
