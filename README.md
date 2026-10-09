@@ -29,7 +29,7 @@
 
 The system follows a C/S (Client/Server) architecture where the Electron app serves as the absolute **Source of Truth**.
 
-* **Electron App**: Runs a WebSocket server (port `8766`) and manages a local SQLite (`sql.js`) database.
+* **Electron App**: Runs a WebSocket server (`127.0.0.1:8766`, loopback only) and manages a local SQLite (`sql.js`) database.
 * **Chrome Extension**: Built on the **Plasmo** framework, supporting both `Real-time WS Sync` and `Local Fallback` modes for independent operation.
 * **AI Engine**: Supports integration with OpenAI, Anthropic (Claude), and locally deployed Ollama models.
 

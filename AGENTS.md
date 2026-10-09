@@ -35,7 +35,7 @@ Load the Chrome extension from `extend/build/chrome-mv3-prod/`.
 
 ## Architecture
 
-**Electron app is the source of truth.** It runs a WebSocket server on port 8766 and stores data in SQLite (via `sql.js`). DB path: `app.getPath("userData")/tracker.db`, overridable with `ACUMINATA_DB_PATH` (used by `npm run test:smoke` to avoid the real DB). The DB auto-saves with 1s debounce, flushed on quit.
+**Electron app is the source of truth.** It runs a WebSocket server on `127.0.0.1:8766` (loopback only — same-network hosts must not reach browsing history) and stores data in SQLite (via `sql.js`). DB path: `app.getPath("userData")/tracker.db`, overridable with `ACUMINATA_DB_PATH` (used by `npm run test:smoke` to avoid the real DB). The DB auto-saves with 1s debounce, flushed on quit.
 
 ```
 Browser → extension (background.ts) → WS → Electron (main.js) → SQLite
