@@ -9,6 +9,7 @@ Electron desktop app + Chrome extension for tracking browsing history with AI ag
 | `/` (root) | Electron desktop app | Node.js, sql.js, ws |
 | `extend/` | Chrome extension (Manifest V3) | Plasmo, React 18, TypeScript |
 | `ui/` | Desktop renderer (no framework) | vanilla HTML/JS |
+| `shared/` | Dual-mode view models (`require` in node, global via `<script>` in the renderer) | vanilla JS |
 | `agent/` | AI agent modules | Node.js (imported by main.js) |
 | `locales/` | i18n JSON | zh-CN only currently |
 
@@ -20,7 +21,7 @@ Two separate `package.json` files — **root** (Electron) and **extend/** (Plasm
 # Desktop
 npm start          # launch Electron
 npm run dev        # launch with DevTools open
-npm test           # run agent/*.test.js + test/ipc-contract.test.js (no Electron needed)
+npm test           # run agent/*.test.js + test/*.test.js (no Electron needed)
 npm run test:smoke # Electron smoke test: hidden window, real preload + renderer, temp DB
 
 # Extension (cd extend/)

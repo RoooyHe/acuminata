@@ -261,8 +261,7 @@ async function refreshStats() {
 
 // --- 作品主视图 ---
 function siteLabel(rule) {
-  const entry = watchlist.find((w) => w.domain === rule);
-  return entry ? entry.label || entry.domain : rule;
+  return window.worksView.siteLabel(rule, watchlist);
 }
 
 function renderWorksSiteBar() {
@@ -275,45 +274,49 @@ function renderWorksSiteBar() {
   bar.innerHTML = html;
 }
 
+// 行内容由 shared/works-view.js 算好，这里只把它画出来。
 function renderWorks() {
   const container = document.getElementById("worksContainer");
   const more = document.getElementById("worksLoadMoreContainer");
+  const view = window.worksView.buildWorksView({
+    works,
+    total: worksTotal,
+    site: worksSite,
+    watchlist,
+  });
 
-  if (works.length === 0) {
-    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${
-      worksSite !== "all" ? "该站点下暂无作品" : "还没有归入作品的访问"
-    }</div>`;
+  if (view.empty) {
+    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${view.emptyText}</div>`;
     more.innerHTML = "";
     return;
   }
 
-  container.innerHTML = works
-    .map((w) => {
-      const sites = (w.sites || [])
-        .map((rule) => {
-          const color = getDomainColor(rule);
-          return `<span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(siteLabel(rule))}</span>`;
-        })
-        .join("");
-      return `
-      <div class="data-item" data-work-id="${w.id}">
+  container.innerHTML = view.rows
+    .map(
+      (r) => `
+      <div class="data-item" data-work-id="${r.id}">
         <div class="item-body">
-          <div class="item-title">${escapeHtml(w.title || "未命名作品")}</div>
+          <div class="item-title">${escapeHtml(r.title)}</div>
           <div class="item-meta">
-            <span class="badge">${w.score || 0} 分</span>
-            <span>${w.sourceCount || 0} 个来源</span>
-            <span>${w.visitCount || 0} 次访问</span>
-            ${sites}
-            <span>${w.lastVisitAt ? formatTime(w.lastVisitAt) : "无访问"}</span>
+            <span class="badge">${r.score} 分</span>
+            <span>${r.sourceCount} 个来源</span>
+            <span>${r.visitCount} 次访问</span>
+            ${r.sites
+              .map(
+                (s) =>
+                  `<span class="badge" style="border-color:${s.color}; color:${s.color}">${escapeHtml(s.label)}</span>`,
+              )
+              .join("")}
+            <span>${r.lastVisitText}</span>
           </div>
         </div>
       </div>
-    `;
-    })
+    `,
+    )
     .join("");
 
-  if (works.length < worksTotal) {
-    more.innerHTML = `<button id="btnWorksLoadMore" class="btn btn-ghost">加载更多 (${works.length} / ${worksTotal})</button>`;
+  if (view.loadMore) {
+    more.innerHTML = `<button id="btnWorksLoadMore" class="btn btn-ghost">${view.loadMore.text}</button>`;
     document.getElementById("btnWorksLoadMore").onclick = () =>
       loadWorks(worksPage + 1);
   } else {
