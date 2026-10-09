@@ -96,6 +96,16 @@ class WorkStore {
     );
   }
 
+  /** 兴趣画像用：已看过的作品与它们的分数（分数即偏好的强弱）。 */
+  listScoredWorks() {
+    return this.db.all("SELECT title, score FROM works ORDER BY score DESC");
+  }
+
+  /** 排序用：全部作品身份键。候选撞上任何一个，就是「已经访问过」。 */
+  listAllWorkKeys() {
+    return this.db.all("SELECT kind, value FROM work_keys");
+  }
+
   /**
    * 按身份键找出候选作品。返回**全部**命中的不同作品。
    * 返生 2 条以上意味着两件已存在的作品其实是同一部——按 ADR-0002，

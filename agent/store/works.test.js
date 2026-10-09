@@ -72,6 +72,16 @@ async function run() {
 
   // 删光访问后的孤儿清理要 records 表，属于 visits × works 的集成（见 record-store.test.js）。
 
+  // 排序的画像输入：已看过作品的分数与全部身份键。
+  assert.ok(
+    works.listScoredWorks().some((w) => w.title === "同名剧" || w.score >= 1),
+    "已看过作品的分数可读",
+  );
+  assert.ok(
+    works.listAllWorkKeys().some((k) => k.kind === "cover_hash" && k.value === "a".repeat(32)),
+    "全部身份键可读（候选靠它排除已看过的）",
+  );
+
   console.log("works store tests passed");
 }
 

@@ -113,6 +113,8 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
   );
 
   ipcMain.handle("recommendations:list", () => store.getRecommendations());
+  // 排序：候选池 → 带理由的推荐（issue #31）。可重跑，重跑替换未裁决的那批。
+  ipcMain.handle("recommendations:rank", (_, metadata) => store.rankCandidates(metadata));
   ipcMain.handle("recommendations:reject", (_, id) => {
     store.rejectRecommendation(id);
     return true;

@@ -156,6 +156,18 @@ class VisitStore {
   }
 
   /**
+   * 兴趣画像用：按来源（适配器声明的镜像组的规范域名，老库退回 matchedRule）
+   * 统计访问次数。同一站点的镜像算一个来源，与 works 的来源聚合同一把钥匙。
+   * @returns {Array<{site:string, visits:number}>}
+   */
+  getSiteAffinity() {
+    return this.db.all(
+      `SELECT COALESCE(site, matchedRule) AS site, COUNT(*) AS visits
+       FROM records GROUP BY COALESCE(site, matchedRule) ORDER BY visits DESC`,
+    );
+  }
+
+  /**
    * 按 matchedRule 分组的访问计数：`{ total, stats: { [matchedRule]: count } }`。
    * getStats 按 watchlist 标签聚合、还带今日/站点数等概览；扩展的 getStats
    * 查询要的是原始站点粒度，所以单独一个名字。

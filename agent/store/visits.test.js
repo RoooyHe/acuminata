@@ -95,6 +95,11 @@ async function run() {
   assert.strictEqual(visits.getStats().total, 2, "概览统计总数");
   assert.strictEqual(visits.getStats().enabled, true, "统计带 enabled（来自 settings）");
   assert.strictEqual(visits.getUnattributedCount(), 1, "未归属计数");
+  assert.deepStrictEqual(
+    visits.getSiteAffinity(),
+    [{ site: "example.com", visits: 2 }],
+    "来源亲和度按站点计数（排序的画像输入）",
+  );
 
   const deleted = visits.deleteRecords(["plain-1"]);
   assert.strictEqual(deleted.deletedCount, 1, "删除返回条数与内容");

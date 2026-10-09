@@ -136,6 +136,46 @@ async function runTests() {
   ok(JSON.parse(pool[0].fields).cover.includes("/upload/vod/"), "候选带着原始字段");
   eq(store._dbAll("SELECT id FROM records").length, before, "候选不是访问（records 没变）");
 
+  // ── ④ 排序：候选 → 推荐（issue #31）──
+  console.log("\n④ 排序成推荐");
+  const seen = pool[0];
+  const seenHash = JSON.parse(seen.fields).cover.match(/([0-9a-f]{32})/)[1];
+  const seenWork = store.recordWorkVisit({
+    keys: [{ kind: "code", value: seenHash, confidence: "high" }],
+    title: seen.title,
+    timestamp: Date.now(),
+  });
+  store.insertRecord({
+    id: "seen-1",
+    url: seen.url,
+    title: seen.title,
+    domain: "www.mgtvtv.com",
+    matchedRule: "mgtvtv.com",
+    tabId: 1,
+    timestamp: Date.now(),
+    workId: seenWork.work.id,
+  });
+
+  const written = store.rankCandidates();
+  const recs = store.getRecommendations();
+  eq(written, mgtEntries.length - 1, "看过的那条不出现，其余都排成推荐");
+  ok(!recs.some((r) => r.url === seen.url), "已经访问过的作品不作为推荐");
+  ok(
+    recs.every((r) => r.reason && r.reason.length > 0),
+    "每条推荐都带理由（列表页条目没有元数据，退回站点兜底）",
+  );
+  ok(recs.every((r) => r.domain === "www.mgtvtv.com"), "推荐带着来源站点");
+  ok(recs.every((r) => r.groupLabel === "芒果"), "推荐带着分组标签");
+  ok(
+    recs.some((r) => r.reason.includes("芒果")),
+    "理由写清了来源站点：" + recs[0].reason,
+  );
+
+  // 重跑不堆重复：替掉未裁决的那批，条数不变。
+  const again = store.rankCandidates();
+  eq(again, recs.length, "重跑条数不变");
+  eq(store.getRecommendations().length, recs.length, "重跑不堆出重复推荐");
+
   console.log(`\nResults: ${passed} passed, ${failed} failed\n`);
   fs.rmSync(tmpDir, { recursive: true, force: true });
   process.exit(failed > 0 ? 1 : 0);

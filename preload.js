@@ -46,6 +46,7 @@ const ROUTES = [
   { name: "clearCandidates", channel: "candidates:clear", invoke: true },
   // Recommendations
   { name: "getRecommendations", channel: "recommendations:list", invoke: true },
+  { name: "rankCandidates", channel: "recommendations:rank", invoke: true },
   { name: "rejectRecommendation", channel: "recommendations:reject", invoke: true },
   { name: "acceptRecommendation", channel: "recommendations:accept", invoke: true },
   { name: "clearRecommendations", channel: "recommendations:clear", invoke: true },
