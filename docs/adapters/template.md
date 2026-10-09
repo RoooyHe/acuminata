@@ -1,8 +1,11 @@
 # 适配器模板
 
-一个适配器 = 一个 JSON 文件 = 一个站点（含它的镜像）。放在 `adapters/` 下，程序启动时加载。
+一个适配器 = 一个 JSON 文件 = 一个平台（含它的镜像）。放在 `adapters/` 下。
+范例就是内置的那个：`adapters/maccms.json`。
 
-适配器由**用户**编写。Acuminata 只定义这个格式，不提供内置适配器，也不生成适配器。
+> 加载目录、以及在程序启动时接上，是 `agent/adapters.js` 的 `loadAdapters()`；今天还没有调用方（见下面「实现状态」）。
+
+适配器由**用户**编写，Acuminata 只定义这个格式——除了内置的平台适配器：MacCMS 也是 `adapters/maccms.json` 里的一个普通文件，与用户写的**同一种格式、同一条管道**，没有特权路径（`docs/adr/0006-adapters-by-platform.md`）。
 
 ## 为什么是 JSON 而不是脚本
 
@@ -14,10 +17,8 @@
 
 ```json
 {
-  "domain": "example.com",
-  "mirrors": ["example-mirror.net", "ex2.to"],
-  "label": "某站",
-  "color": "#5b8dee",
+  "name": "某平台",
+  "detect": { "pageGlobal": "maccms" },
 
   "collect": [
     { "field": "codeFromDom", "selector": "span.video-code", "attr": "text" },
@@ -47,7 +48,7 @@
 | 键 | 必需 | 作用 |
 |---|---|---|
 | `detect` | ✅ | **页面签名**，如 `{"pageGlobal":"maccms"}`。适配器按平台组织，不按域名 |
-| `domains` | | 可选的快速匹配域名 |
+| `domains` | | 可选的快速匹配域名。**尚未被读取**——检测只看签名（ADR-0006） |
 | `name` | | 适配器名（平台名） |
 | `collect` | | **可选。** 从页面 DOM 抽取具名字段。没有它，就只能用内置的五个字段 |
 | `parse` | | 从具名字段里用正则取出身份字段 |
@@ -190,3 +191,15 @@
 `ABC-123` / `ABC123` / `abc-0123` 必须归到同一个作品。这个归一化**必须由程序统一实现，不能让每个适配器各写一遍**——否则同一个编号在不同适配器下得到不同结果，`works` 表会碎掉。
 
 适配器只负责「把编号从噪声里抠出来」。抠出来之后的形状，程序说了算。
+
+## 实现状态
+
+这个格式由 `agent/adapter.js`（detect / collect / parse）、`agent/adapters.js`（加载）读，
+`agent/adapter.test.js` 用真实抓下来的页面夹具验证。
+
+| 已读 | 未读（写了但没人读，别用） |
+|---|---|
+| `detect.pageGlobal`、`collect`（含 `many`、选择器/属性有序备选）、`parse`（`from` / 命名捕获组） | `domains`、`{label:"主演"}` 与 `attr:"a@text"`（按标签文本定位）、`list` 列表页 |
+
+`loadAdapters()` 能读 `adapters/` 目录（内置与用户写在同一个目录、同一段代码，没有特权路径），
+但**还没有谁在启动时调它**：把适配器接进访问写入路径是 #26，把用户适配器接上并在健康度里报告失效是 #28。
