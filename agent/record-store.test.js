@@ -2,6 +2,7 @@
 const { RecordStore } = require("./record-store");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 
 // Use an in-memory SQLite DB for tests
 const TEST_DB = ":memory:";
@@ -894,6 +895,28 @@ async function runTests() {
     assert(s.backfillSites() === 1, "补写一条老访问的 site");
     assert(s.getRecordById("legacy-1").site === "old.com", "site 按适配器声明的镜像组补齐");
     assert(s.backfillSites() === 0, "已经有 site 的不再补");
+  }
+
+  // ── 损坏的库文件不挡启动（issue #54）：挪开、空库开工、备份路径带出来 ──
+  console.log("\nTest: 库文件损坏时挪开它并空库启动");
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-recover-"));
+    const dbPath = path.join(dir, "tracker.db");
+    fs.writeFileSync(dbPath, "这不是一个 SQLite 文件");
+
+    const s = new RecordStore(dbPath);
+    await s.init(); // 原来这里会抛「file is not a database」，窗口就再也开不出来
+    assert(s.recovered && typeof s.recovered.backupPath === "string", "带回备份路径");
+    assert(
+      fs.readFileSync(s.recovered.backupPath, "utf8") === "这不是一个 SQLite 文件",
+      "坏文件原封不动地留在备份路径",
+    );
+    assert(s.getWatchlist().length === 1, "空库照常建表并播下默认监控站");
+
+    s.save();
+    const again = new RecordStore(dbPath);
+    await again.init();
+    assert(again.recovered === null, "保存后重新打开不再算损坏");
   }
 
   // ── 一条访问一条广播：带作品行与统计，供界面就地更新（issue #24） ──

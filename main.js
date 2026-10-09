@@ -110,6 +110,14 @@ async function init() {
 
   await store.init();
 
+  // 库文件读不出来时已被挪到一边、这次以空库启动；控制台说一次，界面加载后再弹一次。
+  if (store.recovered) {
+    const where = store.recovered.backupPath
+      ? `已挪到 ${store.recovered.backupPath}`
+      : "原文件挪不动，保持原样";
+    console.warn(`[DB] 数据库无法读取，${where}，本次以空库启动`);
+  }
+
   // Debounced save
   let saveTimer = null;
   store.onDirty(() => {
@@ -117,7 +125,7 @@ async function init() {
     saveTimer = setTimeout(() => {
       saveTimer = null;
       try {
-        fs.writeFileSync(DB_PATH, Buffer.from(store.export()));
+        store.save();
       } catch (e) { /* ignore */ }
     }, 1000);
   });
@@ -126,7 +134,7 @@ async function init() {
   app.on("before-quit", () => {
     if (saveTimer) clearTimeout(saveTimer);
     try {
-      fs.writeFileSync(DB_PATH, Buffer.from(store.export()));
+      store.save();
     } catch (e) { /* ignore */ }
     if (extensionServer) extensionServer.close();
   });
@@ -385,6 +393,15 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "ui", "index.html"));
+
+  // 启动时损坏的库要报给用户（不能只写控制台——打包后用户看不到），窗口加载完再发。
+  mainWindow.webContents.once("did-finish-load", () => {
+    if (store.recovered) {
+      broadcastToExtensions(
+        toClientMessage("databaseRecovered", { backupPath: store.recovered.backupPath }),
+      );
+    }
+  });
 
   mainWindow.once("ready-to-show", () => mainWindow.show());
 

@@ -14,7 +14,7 @@
 // modules whose reads span another domain take that domain as a collaborator
 // (works reads records; visits reads sites + works; recommendations writes via visits).
 
-const { openDatabase } = require("./store/db");
+const { openDatabase, saveDatabase } = require("./store/db");
 const { SettingsStore } = require("./store/settings");
 const { SiteStore } = require("./store/sites");
 const { WorkStore } = require("./store/works");
@@ -47,6 +47,8 @@ class RecordStore {
 
   async init() {
     this.db = await openDatabase(this.dbPath);
+    // 原来的库文件读不出来时被挪走了，备份路径在这里；启动时据此报给用户。
+    this.recovered = this.db.recovered;
     const emit = (type, payload) => this.broadcast(type, payload);
 
     this._settings = new SettingsStore(this.db, emit);
@@ -86,6 +88,11 @@ class RecordStore {
 
   export() {
     return this.db.export();
+  }
+
+  /** 原子落盘（临时文件 + rename）：要么整体替换，要么旧文件一个字节不动。 */
+  save() {
+    saveDatabase(this.dbPath, this.db.export());
   }
 
   // ── Settings ───────────────────────────────────────────────────────────────

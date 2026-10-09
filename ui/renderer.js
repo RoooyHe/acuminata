@@ -853,6 +853,14 @@ window.electronAPI.onUpdate((data) => {
     applyHealth(data.health);
   } else if (data.type === "worksBackfilledProgress") {
     setBackfillStatus(`${worksJobLabel(data.op)}中… ${data.processed} / ${data.before}`);
+  } else if (data.type === "databaseRecovered") {
+    // 启动时库文件读不出来，主进程已经把它挪到一边、用空库跑起来了。
+    showToast(
+      data.backupPath
+        ? `数据库文件损坏，已挪到 ${data.backupPath}`
+        : "数据库文件损坏，已改用空库",
+      "error",
+    );
   } else if (data.type === "candidatesUpdated") {
     loadCandidates();
   } else if (data.type === "recommendationsUpdated") {
