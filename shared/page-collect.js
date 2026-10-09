@@ -115,5 +115,91 @@
     };
   }
 
-  return { collectPage, detectBySignature };
+  /**
+   * 列表页条目 → 候选的**原始字段**（docs/adapters/template.md「列表页」）。
+   *
+   * 与 `collectPage` 一样**自足**：抓取宿主要把它整段注入隐藏窗口
+   * （`collectListEntries.toString()`，ADR-0005），所以只认参数与全局。
+   * 规则与页面级 `collect` 完全相同，只是作用域是**一个条目元素**：
+   *   - `item` 是**有序备选**选择器，第一个命中的那一个胜出
+   *   - `selector: ""` 表示条目元素自己（常用于取条目链接的 href）
+   *   - `url` 字段按列表页地址补成绝对地址（条目里写的是相对路径）
+   *
+   * 抽不出任何字段的条目直接丢掉——选择器全落空时说不上是一条候选。
+   *
+   * @param {Object} listDecl 一条 `list` 声明
+   * @param {Object} [doc] 文档；注入隐藏窗口时省略（用 document）
+   * @param {string} [pageUrl] 列表页地址，用来把相对地址补全
+   * @returns {Array<Object>} 每个条目的字段表
+   */
+  function collectListEntries(listDecl, doc, pageUrl) {
+    const root = doc || document;
+    const list = listDecl || {};
+    const base =
+      pageUrl ||
+      root.baseURI ||
+      (typeof location !== "undefined" ? location.href : "");
+
+    const readAttr = (node, attr) => {
+      if (attr === "text") return (node.textContent || "").trim();
+      if (attr === "html") return node.innerHTML || "";
+      return ((node.getAttribute && node.getAttribute(attr)) || "").trim();
+    };
+    const pickValue = (node, attrs) => {
+      for (const attr of attrs) {
+        const v = readAttr(node, attr);
+        if (v) return v;
+      }
+      return "";
+    };
+    const absolute = (value) => {
+      if (!value) return value;
+      try {
+        return new URL(value, base).href;
+      } catch (e) {
+        return value;
+      }
+    };
+
+    const items = [];
+    const itemSelectors = Array.isArray(list.item) ? list.item : [list.item];
+    for (const selector of itemSelectors) {
+      if (!selector) continue;
+      const found = Array.from(root.querySelectorAll(selector));
+      if (found.length) {
+        items.push(...found);
+        break;
+      }
+    }
+
+    const entries = [];
+    for (const item of items) {
+      const entry = {};
+      let found = false;
+      for (const rule of list.collect || []) {
+        if (!rule || !rule.field) continue;
+        const selectors = Array.isArray(rule.selector) ? rule.selector : [rule.selector];
+        const attrs = Array.isArray(rule.attr) ? rule.attr : [rule.attr];
+        for (const selector of selectors) {
+          const values = [];
+          const nodes = selector === "" ? [item] : item.querySelectorAll(selector);
+          for (const node of nodes) {
+            const v = pickValue(node, attrs);
+            if (v) values.push(rule.field === "url" ? absolute(v) : v);
+            if (!rule.many) break;
+          }
+          if (values.length) {
+            entry[rule.field] = rule.many ? values : values[0];
+            found = true;
+            break;
+          }
+        }
+        if (entry[rule.field] === undefined) entry[rule.field] = rule.many ? [] : null;
+      }
+      if (found) entries.push(entry);
+    }
+    return entries;
+  }
+
+  return { collectPage, detectBySignature, collectListEntries };
 });

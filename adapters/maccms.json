@@ -1,5 +1,5 @@
 {
-  "_note": "按 docs/adapters/template.md 写成，用真实抓下来的两页验证（test/fixtures/maccms-*.html）。平台级适配器：只依赖签名、URL/属性模式与 meta，不锚 class —— 两个站的 class 完全不同。",
+  "_note": "按 docs/adapters/template.md 写成，用真实抓下来的页验证（test/fixtures/maccms-*.html）。平台级适配器：只依赖签名、URL/属性模式与 meta，不锚 class —— 两个站的 class 完全不同。列表页的 item/封面取法同各自的夹具页。",
   "name": "MacCMS",
   "detect": { "pageGlobal": "maccms" },
   "collect": [
@@ -15,5 +15,37 @@
       "from": ["cover", "keywords", "url", "title"],
       "regex": "/upload/vod/[0-9-]+/(?<code>[0-9a-f]{32})\\."
     }
-  }
+  },
+  "list": [
+    {
+      "name": "最新更新",
+      "url": "https://www.mgtvtv.com/show/2-1/",
+      "pageUrl": "https://www.mgtvtv.com/show/2-{page}/",
+      "item": ["a.video-item"],
+      "collect": [
+        { "field": "url", "selector": "", "attr": "href" },
+        { "field": "title", "selector": ["img"], "attr": ["alt", "title"] },
+        {
+          "field": "cover",
+          "selector": ["img"],
+          "attr": ["data-original", "data-src", "src"]
+        }
+      ]
+    },
+    {
+      "name": "最新更新",
+      "url": "https://aiqiyi.ai/vodshow/2-----------1.html",
+      "pageUrl": "https://aiqiyi.ai/vodshow/2--------{page}---1.html",
+      "item": [".pic"],
+      "collect": [
+        { "field": "url", "selector": ["a"], "attr": "href" },
+        { "field": "title", "selector": ["a"], "attr": ["title", "text"] },
+        {
+          "field": "cover",
+          "selector": [".img-wrapper", "img"],
+          "attr": ["data-original", "data-src", "src"]
+        }
+      ]
+    }
+  ]
 }

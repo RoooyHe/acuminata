@@ -23,6 +23,7 @@ const SEED_DWELL_TEXT = "2分5秒";
 const SEED_WS_DOMAIN = "smoke-ws.example";
 const SEED_WS_URL = "https://smoke-ws.example/v/42";
 const SEED_WS_TITLE = "SMOKE 上报 δ";
+const SEED_CANDIDATE_TITLE = "SMOKE 候选 ε";
 const TIMEOUT_MS = 60000;
 const WS_PORT = 8766;
 
@@ -125,6 +126,21 @@ async function seedDatabase() {
     title: "SMOKE 歧义丙",
     timestamp: ts - 120000,
   });
+  // 候选与推荐分表：候选池里的条目在界面上单独一面，不是推荐面板。
+  store.importCandidates({
+    adapterFile: "smoke.json",
+    listName: "冒烟列表",
+    domain: "smoke-cand.example",
+    matchedRule: "smoke-cand.example",
+    groupLabel: "冒烟站",
+    entries: [
+      {
+        url: "https://smoke-cand.example/tv/1/",
+        title: SEED_CANDIDATE_TITLE,
+        cover: "https://smoke-cand.example/upload/vod/20260101-1/deadbeef.webp",
+      },
+    ],
+  });
   fs.writeFileSync(dbPath, Buffer.from(store.export()));
 }
 
@@ -226,6 +242,7 @@ function pageProbe(invokeRoutes) {
       watchlistText: "",
       watchlistRemoveDomain: "",
       watchlistRemoveInline: false,
+      candidatesText: "",
       worksText: "",
       worksRowHtml: "",
       ambiguousText: "",
@@ -258,6 +275,15 @@ function pageProbe(invokeRoutes) {
     out.worksText = (document.getElementById("worksContainer") || {}).textContent || "";
     out.worksRowHtml = (document.querySelector("#worksContainer [data-work-id]") || {}).outerHTML || "";
     out.ambiguousText = (document.getElementById("ambiguousWorks") || {}).textContent || "";
+
+    // 候选单独一面：真实渲染器把候选池画出来，而不是与推荐共用一个空面板。
+    const candRendered = () => {
+      const c = document.getElementById("candidatesContainer");
+      return !!c && c.textContent.includes(${JSON.stringify(SEED_CANDIDATE_TITLE)});
+    };
+    while (!candRendered() && Date.now() < deadline) await sleep(50);
+    out.candidatesText =
+      (document.getElementById("candidatesContainer") || {}).textContent || "";
 
     // 「未归类」是一个可浏览的分组：点开它，未归属的访问要列出来。
     out.worksHealthText = (document.getElementById("worksHealth") || {}).textContent || "";
@@ -464,6 +490,11 @@ async function main() {
     probe.ambiguousText.includes("SMOKE 歧义甲") &&
       probe.ambiguousText.includes("SMOKE 歧义乙"),
     "renderer did not surface ambiguous works: " + probe.ambiguousText,
+  );
+  expect(
+    probe.candidatesText.includes(SEED_CANDIDATE_TITLE),
+    "renderer did not render the seeded candidate in its own panel: " +
+      probe.candidatesText,
   );
   expect(probe.detailVisible, "clicking a work did not open its detail");
   expect(

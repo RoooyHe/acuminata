@@ -4,7 +4,7 @@
 const { shell } = require("electron");
 
 function createIPCDispatcher(ipcMain, store, deps = {}) {
-  const { providers, executeTool, getAdapterHealth, broadcastAgentEvent } = deps;
+  const { providers, executeTool, getAdapterHealth, broadcastAgentEvent, fetchCandidates } = deps;
   const readStore = store.getAgentReadStore();
 
   ipcMain.handle("records:page", (_, page, pageSize, filter) =>
@@ -97,6 +97,20 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     store.setAIConfig(config);
     return true;
   });
+
+  ipcMain.handle("candidates:list", () => store.getCandidates());
+  ipcMain.handle("candidates:remove", (_, id) => {
+    store.removeCandidate(id);
+    return true;
+  });
+  ipcMain.handle("candidates:clear", () => {
+    store.clearCandidates();
+    return true;
+  });
+  // 抓取只在用户点击时触发（ADR-0005）；宿主（隐藏 BrowserWindow）在 main.js。
+  ipcMain.handle("candidates:fetch", () =>
+    fetchCandidates ? fetchCandidates() : { fetched: 0, inserted: 0, updated: 0, failures: [] },
+  );
 
   ipcMain.handle("recommendations:list", () => store.getRecommendations());
   ipcMain.handle("recommendations:reject", (_, id) => {
