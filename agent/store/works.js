@@ -11,6 +11,7 @@ const {
 } = require("../cluster");
 const { KEY_KINDS, CONFIDENCE } = require("../identity");
 const { uuid, now } = require("./ids");
+const { fromJson } = require("./json-column");
 
 // 作品列表行的聚合 SELECT：getWorksPage 与 getWorkRow 共用，行形状只此一处。
 const WORK_ROW_SELECT = `SELECT w.*,
@@ -368,7 +369,9 @@ class WorkStore {
   }
 
   /**
-   * 历史回填：把已有访问归入作品（issue #6）。
+   * 历史回填：把已有访问归入作品（issue #6）。只处理未归属的访问
+   * （workId IS NULL）。适配器改好后要重跑**全历史**（含已归属的），
+   * 用 reparseWorks——它清空派生结果后走的就是这个方法。
    *
    * 与实时上报共用同一条身份解析（identityKeysFor）与归属（recordWorkVisit）
    * 代码路径，不存在第二套判定（docs/adr/0002）。
@@ -379,12 +382,12 @@ class WorkStore {
    *     不会重复计分（recordWorkVisit → resolveWorkScore 当日不重复加）。
    * 中途失败或退出只留下「后面的还没处理」，再跑一次补齐，不产生重复或损坏。
    *
-   * @param {{ onProgress?: Function, batchSize?: number }} [options]
+   * @param {{ onProgress?: Function, batchSize?: number, op?: "backfill"|"reparse" }} [options]
    *        onProgress({ processed, before, assigned, created, remaining }) 每批一次，
    *        before 为回填前的未归属数（与最终返回值同名，界面上一份数一个名字）
    * @returns {{ before:number, assigned:number, created:number, ambiguous:number, remaining:number }}
    */
-  backfillWorks({ onProgress, batchSize = 200 } = {}) {
+  backfillWorks({ onProgress, batchSize = 200, op = "backfill" } = {}) {
     const watchlist = this.sites.getWatchlist();
     const total = this.db.scalar("SELECT COUNT(*) as total FROM records WHERE workId IS NULL");
     let assigned = 0;
@@ -398,7 +401,7 @@ class WorkStore {
     let cursorId = "";
     for (;;) {
       const rows = this.db.all(
-        `SELECT id, url, title, domain, matchedRule, tabId, timestamp, description, ogImage
+        `SELECT id, url, title, domain, matchedRule, tabId, timestamp, description, ogImage, pageSignature, pageFields
          FROM records
          WHERE workId IS NULL AND (timestamp > ? OR (timestamp = ? AND id > ?))
          ORDER BY timestamp, id LIMIT ?`,
@@ -410,7 +413,17 @@ class WorkStore {
         cursorTs = row.timestamp;
         cursorId = row.id;
         processed++;
-        const { keys } = identityKeysFor(row, watchlist, undefined, this.adapters);
+        const { keys, extracted } = identityKeysFor(
+          {
+            ...row,
+            // 存的是 JSON 文本；identityKeysFor 读的是数组 / 对象。
+            pageSignature: fromJson(row.pageSignature, []),
+            pageFields: fromJson(row.pageFields, {}),
+          },
+          watchlist,
+          undefined,
+          this.adapters,
+        );
         const visit = this.recordWorkVisit({
           keys,
           title: row.title,
@@ -419,7 +432,11 @@ class WorkStore {
         if (visit.ambiguous) ambiguous++;
         if (visit.created) created++;
         if (visit.work) {
-          this.db.run("UPDATE records SET workId = ? WHERE id = ?", [visit.work.id, row.id]);
+          this.db.run("UPDATE records SET workId = ?, edition = ? WHERE id = ?", [
+            visit.work.id,
+            (extracted && extracted.edition) || "",
+            row.id,
+          ]);
           assigned++;
         }
       }
@@ -431,7 +448,7 @@ class WorkStore {
         created,
         remaining: total - assigned,
       };
-      this.emit("worksBackfilledProgress", progress);
+      this.emit("worksBackfilledProgress", { ...progress, op });
       if (onProgress) onProgress(progress);
     }
 
@@ -443,8 +460,43 @@ class WorkStore {
       // 每条记录只被游标扫到一次，且要么归属要么原地不动，所以剩余数可以直接算出来。
       remaining: total - assigned,
     };
-    this.emit("worksBackfilled", result);
+    this.emit("worksBackfilled", { ...result, op });
     return result;
+  }
+
+  /**
+   * 显式的重新解析（issue #27）：适配器改好后，把**已有访问**按当前适配器重跑一遍。
+   *
+   * 采集到的字段随访问存在 records.pageSignature / records.pageFields，`parse`
+   * 因此是已存字段的纯函数（docs/adapters/template.md「重跑」）。重跑不改访问本身，
+   * 只重算作品的派生结果：清空 workId / works / work_keys / work_ambiguities，再把每条
+   * 访问交给与实时上报同一条 `identityKeysFor → recordWorkVisit` 通道——没有第二套解析。
+   *
+   * 与 backfillWorks 的区别：回填只补未归属的，重跑连已归属的一起重算——
+   * 改一次适配器，全历史受益，不只是新访问。
+   *
+   * 重跑是**先清后建**：清空与重建之间没有事务。中途退出只会留下「派生结果已清、
+   * 访问还在」的中间态——再跑一次就补齐，访问本身一条不少。
+   *
+   * @param {{ onProgress?: Function, batchSize?: number }} [options]
+   * @returns {{ before:number, assigned:number, created:number, ambiguous:number, remaining:number }}
+   */
+  reparseWorks(options = {}) {
+    this._clearWorkAttribution();
+    return this.backfillWorks({ ...options, op: "reparse" });
+  }
+
+  /**
+   * 清空作品的派生结果——访问一条不动，workId 归零。
+   * works / work_keys / work_ambiguities 全部由 records 推导，所以可以整块重建：
+   * 重跑会把它们按当前适配器重新算出来，歧义不会丢——用户的裁决存在 pending actions，
+   * 不在这张表里。records.pageSignature / records.pageFields 是原始字段，不在清空之列。
+   */
+  _clearWorkAttribution() {
+    this.db.run("UPDATE records SET workId = NULL, edition = ''");
+    this.db.run("DELETE FROM work_ambiguities");
+    this.db.run("DELETE FROM work_keys");
+    this.db.run("DELETE FROM works");
   }
 }
 

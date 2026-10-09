@@ -17,6 +17,7 @@ const {
   buildRejectReflectionPrompt: buildRejectPrompt,
 } = require("../prompts");
 const { uuid, now } = require("./ids");
+const { toJson } = require("./json-column");
 
 class VisitStore {
   constructor(db, { emit, sites, works, settings, adapters } = {}) {
@@ -54,6 +55,10 @@ class VisitStore {
       "dwellTime INTEGER DEFAULT 0",
       "workId TEXT DEFAULT NULL",
       "edition TEXT DEFAULT ''",
+      // 采集到的原始字段随访问落库：parse 因此是已存字段的纯函数，
+      // 改一次适配器能拿它们重跑全历史（docs/adapters/template.md「重跑」，#27）。
+      "pageSignature TEXT DEFAULT '[]'",
+      "pageFields TEXT DEFAULT '{}'",
     ];
     for (const col of cols) db.tryExec(`ALTER TABLE records ADD COLUMN ${col}`);
     // workId 由上面的迁移补上，所以索引建在迁移之后。
@@ -240,7 +245,7 @@ class VisitStore {
   insertRecord(record, opts = {}) {
     const nowTs = now();
     this.db.run(
-      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId, edition, dwellTime) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId, edition, dwellTime, pageSignature, pageFields) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         record.id,
         record.url,
@@ -256,6 +261,8 @@ class VisitStore {
         record.workId || null,
         record.edition || "",
         record.dwellTime || 0,
+        toJson(record.pageSignature, "[]"),
+        toJson(record.pageFields, "{}"),
       ],
     );
     const full = this.getRecordById(record.id);
@@ -358,7 +365,7 @@ class VisitStore {
    *
    * @param {Object} incoming 扩展上报的访问：
    *        {url, title, domain, matchedRule, tabId, timestamp, id?,
-   *         favIconUrl?, description?, ogImage?}
+   *         favIconUrl?, description?, ogImage?, pageSignature?, pageFields?}
    * @returns {{ action:"drop"|"ignore"|"insert"|"update", reason?:string,
    *            record?:Object, work?:Object|null, ambiguous?:boolean,
    *            keys?:Array<{kind:string,value:string,confidence:string}>, extracted?:Object }}
@@ -416,6 +423,13 @@ class VisitStore {
           updatedAt: scored.newUpdatedAt,
           workId,
           edition,
+          // 回访没带页面采集（旧上报 / dwell-time）时不要把它抹掉：原始字段是历史事实。
+          ...(incoming.pageSignature || incoming.pageFields
+            ? {
+                pageSignature: toJson(incoming.pageSignature, "[]"),
+                pageFields: toJson(incoming.pageFields, "{}"),
+              }
+            : {}),
         },
         { emit: false },
       );
@@ -445,6 +459,8 @@ class VisitStore {
         ogImage: incoming.ogImage || "",
         workId,
         edition,
+        pageSignature: incoming.pageSignature,
+        pageFields: incoming.pageFields,
       },
       { emit: false },
     );

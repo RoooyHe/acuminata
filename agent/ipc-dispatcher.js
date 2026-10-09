@@ -30,6 +30,9 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
 
   ipcMain.handle("works:backfill", () => store.backfillWorks());
 
+  // 适配器改一次，全历史重跑：清空派生结果后走同一条归属通道（issue #27）。
+  ipcMain.handle("works:reparse", () => store.reparseWorks());
+
   ipcMain.handle("records:list", () => store.getAllRecords());
 
   ipcMain.handle("records:stats", () => store.getStats());

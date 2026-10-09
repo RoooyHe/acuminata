@@ -16,6 +16,7 @@ const ROUTES = [
   { name: "getWorkHealth", channel: "works:health", invoke: true },
   { name: "getUnattributedPage", channel: "works:unattributed", invoke: true },
   { name: "backfillWorks", channel: "works:backfill", invoke: true },
+  { name: "reparseWorks", channel: "works:reparse", invoke: true },
   { name: "getRecords", channel: "records:list", invoke: true },
   { name: "getStatistics", channel: "records:stats", invoke: true },
   { name: "clearRecords", channel: "records:clear", invoke: true },

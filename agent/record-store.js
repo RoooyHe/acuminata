@@ -116,6 +116,7 @@ class RecordStore {
   resolveOpenUrl(url) { return this._works.resolveOpenUrl(url); }
   getAmbiguousWorks() { return this._works.getAmbiguousWorks(); }
   backfillWorks(options) { return this._works.backfillWorks(options); }
+  reparseWorks(options) { return this._works.reparseWorks(options); }
 
   // ── Visits ─────────────────────────────────────────────────────────────────
 
