@@ -1,6 +1,7 @@
 import type { WatchlistEntry, HistoryRecord } from "../shared/types"
 import { createAIProviders } from "../agent/providers"
 import { buildAnalysisPrompt } from "../agent/prompts"
+import { analyzePrompt } from "../agent/analysis-pipeline"
 import { TabTracker } from "./tab-tracker"
 import { WsTransport } from "./ws-transport"
 
@@ -262,14 +263,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ success: true })
   } else if ((msg as { type: string }).type === "AI_ANALYZE") {
     const prompt = buildAnalysisPrompt(records, watchlist)
-    aiProviders.callText(prompt).then((raw) => {
-      const jsonStr = aiProviders.extractJson(raw)
-      let result = { summary: "", keywords: [] as string[] }
-      if (jsonStr) {
-        try { const parsed = JSON.parse(jsonStr); result.summary = parsed.summary || ""; result.keywords = parsed.keywords || [] } catch (e) {}
-      }
-      if (!result.summary && raw) result.summary = raw.slice(0, 200)
-      sendResponse({ summary: result.summary, keywords: result.keywords })
+    analyzePrompt(aiProviders, prompt).then((result) => {
+      sendResponse(result)
     }).catch((e) => {
       sendResponse({ error: String(e) })
     })

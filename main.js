@@ -15,6 +15,8 @@ const {
 const { agentLoop, executeApprovedActions } = require("./agent/executor");
 const { createAIProviders } = require("./agent/providers");
 const { createAdapterHealth } = require("./agent/adapter-health");
+const { reflectPrompt } = require("./agent/analysis-pipeline");
+const { applyReflection } = require("./agent/reflect");
 
 const EXTENSION_PORT = 8766;
 // Explicit override only (used by the smoke test); otherwise the user's real DB.
@@ -274,43 +276,10 @@ function handleExtensionMessage(ws, msg) {
 async function triggerReflectionOnDelete(deletedRecords) {
   try {
     const prompt = store.buildDeleteReflectionPrompt(deletedRecords);
-    const response = await aiProviders.callText(prompt);
-    const jsonStr = aiProviders.extractJson(response);
-    if (jsonStr) {
-      const reflection = JSON.parse(jsonStr);
-      applyReflection(store, reflection, null);
-    }
+    const reflection = await reflectPrompt(aiProviders, prompt);
+    applyReflection(store.upsertMemory.bind(store), reflection, null);
   } catch (e) {
     console.error("Reflection on delete error:", e);
-  }
-}
-
-function applyReflection(store, reflection, sourceConvId) {
-  if (!reflection || typeof reflection !== "object") return;
-  const nowTs = Date.now();
-
-  if (reflection.insight) {
-    store.upsertMemory(
-      "insight",
-      "reflection_" + nowTs,
-      JSON.stringify({ insight: reflection.insight, profileUpdate: reflection.profileUpdate || "", time: nowTs }),
-      0.5,
-      null,
-      JSON.stringify(reflection)
-    );
-  }
-  if (Array.isArray(reflection.antiPatterns)) {
-    for (const p of reflection.antiPatterns) {
-      if (p && typeof p === "string") {
-        store.upsertMemory("anti_pattern", p, p, 0.4, sourceConvId, JSON.stringify(reflection));
-      }
-    }
-  }
-  if (reflection.preferredDomains && typeof reflection.preferredDomains === "object") {
-    for (const [domain, weight] of Object.entries(reflection.preferredDomains)) {
-      const w = Math.min(1, Math.max(0, Number(weight) || 0.5));
-      store.upsertMemory("preference", domain, domain, w, sourceConvId, JSON.stringify(reflection));
-    }
   }
 }
 

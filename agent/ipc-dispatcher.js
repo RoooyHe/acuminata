@@ -172,9 +172,7 @@ const {
   executeApprovedActions,
 } = require("./executor");
 
-const {
-  buildAnalysisPrompt,
-} = require("./prompts");
+const { analysisFromReply } = require("./analysis-pipeline");
 
 async function triggerAnalysis(store, providers, executeTool, customCommand) {
   try {
@@ -236,18 +234,11 @@ Always respond in the same language as the user's records. Be concise.`;
       store._emit("agentPendingUpdated", store.getPendingActions());
     }
 
-    const jsonStr = providers.extractJson(result || "");
-    let analysis = { summary: "", keywords: [] };
-    if (jsonStr) {
-      try { analysis = JSON.parse(jsonStr); } catch (e) {}
-    }
-    if (!analysis.summary && result) {
-      analysis.summary = result.slice(0, 200);
-    }
+    const analysis = analysisFromReply(providers, result || "");
 
     return {
-      summary: analysis.summary || "",
-      keywords: analysis.keywords || [],
+      summary: analysis.summary,
+      keywords: analysis.keywords,
       recordsAnalyzed: records.length,
       pendingActions: pendingActions.length,
     };
