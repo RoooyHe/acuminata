@@ -754,6 +754,55 @@ async function runTests() {
     assert(s.getRecordsPage(1, 10, "all").total === 1, "访问本身还在，只是未归属");
   }
 
+  // ── 打开来源：分组内最近访问过的镜像（issue #19） ──
+  // 「这条访问该打开哪个地址」只由 RecordStore.resolveOpenUrl 一处判定。
+  console.log("\nTest: 打开来源 — 分组内最近访问过的镜像");
+  {
+    const s = await initStore();
+    // 同一站点（label 相同）的两个镜像域名 + 一个单域名站点
+    s.addWatchlist({ domain: "aiqiyi.ai", label: "爱奇艺", color: "#fff" });
+    s.addWatchlist({ domain: "aiqiyi.com", label: "爱奇艺", color: "#fff" });
+    s.addWatchlist({ domain: "solo.com", label: "单站", color: "#fff" });
+
+    const t1 = new Date(2026, 3, 1, 10).getTime();
+    const t2 = new Date(2026, 3, 2, 10).getTime();
+    const w = s.recordWorkVisit({
+      keys: [{ kind: "code", value: "OPEN-1", confidence: "high" }],
+      title: "待打开的作品",
+      timestamp: t1,
+    });
+    // 镜像 A 上先看过，镜像 B 后看 —— B 是「最近访问过的镜像」
+    s.insertRecord({ id: "o1", url: "https://aiqiyi.ai/v/1", title: "待打开的作品", domain: "aiqiyi.ai", matchedRule: "aiqiyi.ai", tabId: 1, timestamp: t1, edition: "中文字幕", workId: w.work.id });
+    s.insertRecord({ id: "o2", url: "https://aiqiyi.com/v/2", title: "待打开的作品", domain: "aiqiyi.com", matchedRule: "aiqiyi.com", tabId: 1, timestamp: t2, edition: "中文字幕", workId: w.work.id });
+
+    assert(
+      s.resolveOpenUrl("https://aiqiyi.ai/v/1") === "https://aiqiyi.com/v/1",
+      "分组内最近访问过的镜像域名胜出，路径不变",
+    );
+    assert(
+      s.resolveOpenUrl("https://www.aiqiyi.ai/v/1") === "https://aiqiyi.com/v/1",
+      "带 www 的地址走同一条判定",
+    );
+    assert(
+      s.resolveOpenUrl("https://solo.com/v/9") === "https://solo.com/v/9",
+      "组内只有一个域名时原样返回",
+    );
+    assert(
+      s.resolveOpenUrl("https://unregistered.com/v/9") === "https://unregistered.com/v/9",
+      "认不出分组时原样返回",
+    );
+    assert(s.resolveOpenUrl("not a url") === "not a url", "解析不了的地址原样返回");
+
+    // 作品详情的来源行：点开的是「分组内最近访问过的地址」，与改动前一致
+    const detail = s.getWorkDetail(w.work.id);
+    const fromAi = detail.sources.find((x) => x.matchedRule === "aiqiyi.ai");
+    assert(fromAi.lastUrl === "https://aiqiyi.ai/v/1", "来源仍携带它自己那条最近地址");
+    assert(
+      s.resolveOpenUrl(fromAi.lastUrl) === "https://aiqiyi.com/v/1",
+      "来源行解析到分组内最近镜像，行为与改动前一致",
+    );
+  }
+
   console.log("\n✅ All RecordStore tests passed!");
   process.exit(0);
 }

@@ -56,35 +56,9 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     return store.toggleRecordPin(id, pinned, score);
   });
 
+  // 来源解析只有一处：store 把域名换成该分组内最近访问过的镜像，这里只负责打开。
   ipcMain.handle("records:open-url", (_, url) => {
-    try {
-      const u = new URL(url);
-      const watchlist = store.getWatchlist();
-      const entry = watchlist.find(
-        (w) => w.domain === u.hostname || url.includes(w.domain),
-      );
-      if (entry) {
-        const groupLabel = entry.label || entry.domain;
-        const groupDomains = watchlist
-          .filter((w) => (w.label || w.domain) === groupLabel)
-          .map((w) => w.domain);
-        if (groupDomains.length > 1) {
-          const placeholders = groupDomains.map(() => "?").join(",");
-          const latest = store._dbGet(
-            `SELECT domain FROM records WHERE matchedRule IN (${placeholders}) ORDER BY timestamp DESC LIMIT 1`,
-            groupDomains,
-          );
-          if (latest && latest.domain) {
-            u.hostname = latest.domain;
-            shell.openExternal(u.toString());
-            return;
-          }
-        }
-      }
-    } catch (e) {
-      // ignore
-    }
-    shell.openExternal(url);
+    shell.openExternal(store.resolveOpenUrl(url));
   });
 
   ipcMain.handle("watchlist:get", () => store.getWatchlist());

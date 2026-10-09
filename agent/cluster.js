@@ -232,5 +232,6 @@ module.exports = {
   matchesRegex,
   computeDailyScore,
   resolveGroupLabel,
+  getGroupDomains,
   extractPath,
 };
