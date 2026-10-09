@@ -11,6 +11,7 @@ const {
   extractPath,
   matchesRegex,
   identityKeysFor,
+  siteKeyFor,
 } = require("../cluster");
 const {
   buildDeleteReflectionPrompt: buildDeletePrompt,
@@ -59,6 +60,8 @@ class VisitStore {
       // 改一次适配器能拿它们重跑全历史（docs/adapters/template.md「重跑」，#27）。
       "pageSignature TEXT DEFAULT '[]'",
       "pageFields TEXT DEFAULT '{}'",
+      // 来源键：适配器声明的镜像组的规范域名。同一站点的镜像因此只算一个来源（#29）。
+      "site TEXT DEFAULT NULL",
     ];
     for (const col of cols) db.tryExec(`ALTER TABLE records ADD COLUMN ${col}`);
     // workId 由上面的迁移补上，所以索引建在迁移之后。
@@ -135,7 +138,10 @@ class VisitStore {
       }
     }
 
-    const uniqueSites = new Set(watchlist.map((w) => w.label || w.domain)).size;
+    // 站点数按镜像组算：同一站点的镜像只算一个（#29）。
+    const uniqueSites = new Set(
+      watchlist.map((w) => siteKeyFor(w.domain, this.adapters)),
+    ).size;
 
     return {
       total,
@@ -211,6 +217,24 @@ class VisitStore {
     return this.db.get("SELECT COUNT(*) as total FROM records WHERE workId IS NULL").total;
   }
 
+  /**
+   * 给老库的访问补上 `site`（来源键）：建库时还没有这一列。
+   * 按当前适配器声明的镜像算一次，以后镜像改版靠 `reparseWorks` 重算。
+   * @returns {number} 补写条数
+   */
+  backfillSites() {
+    const rows = this.db.all(
+      "SELECT id, domain, matchedRule FROM records WHERE site IS NULL",
+    );
+    for (const row of rows) {
+      this.db.run("UPDATE records SET site = ? WHERE id = ?", [
+        siteKeyFor(row.matchedRule || row.domain, this.adapters),
+        row.id,
+      ]);
+    }
+    return rows.length;
+  }
+
   extractHighValueRecords() {
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
     let rows = this.db.all(
@@ -245,12 +269,13 @@ class VisitStore {
   insertRecord(record, opts = {}) {
     const nowTs = now();
     this.db.run(
-      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId, edition, dwellTime, pageSignature, pageFields) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO records (id, url, title, domain, site, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage, workId, edition, dwellTime, pageSignature, pageFields) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         record.id,
         record.url,
         record.title || "",
         record.domain,
+        record.site || siteKeyFor(record.domain, this.adapters),
         record.matchedRule,
         record.tabId || 0,
         record.timestamp || nowTs,
@@ -279,12 +304,13 @@ class VisitStore {
   insertPinnedVisit(record) {
     const nowTs = now();
     this.db.run(
-      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, '', '', '')",
+      "INSERT INTO records (id, url, title, domain, site, matchedRule, tabId, timestamp, pinned, score, createdAt, updatedAt, favIconUrl, description, ogImage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, '', '', '')",
       [
         record.id,
         record.url,
         record.title,
         record.domain,
+        record.site || siteKeyFor(record.domain, this.adapters),
         record.matchedRule,
         record.tabId,
         record.timestamp,
@@ -356,7 +382,7 @@ class VisitStore {
    *
    * 这是访问写入路径的**唯一入口**（docs/adr/0002：判定在写入时做出并落库，只做一次）。
    * 链路上有两层意义不同的去重与计分，都在这一个方法里：
-   *   - 访问层：`records` 是访问事件。同一组（label 相同 = 同一站点的镜像）里路径相同的
+   *   - 访问层：`records` 是访问事件。同一组（适配器声明为镜像的域名）里路径相同的
    *     两条来访是同一次访问；同一标签页 60s 内重报则什么也不做。
    *   - 作品层：`works` 跨站融合。同一天最多 +1，无论从哪个站、哪个版本进入。
    *
@@ -380,8 +406,13 @@ class VisitStore {
     const ts = incoming.timestamp || now();
     const watchlist = this.sites.getWatchlist();
 
-    // 1. 分组：label 相同即同一个站点，镜像域名归同一组
-    const group = resolveGroup(incoming.matchedRule, incoming.domain, watchlist);
+    // 1. 分组：适配器声明的镜像归同一组（label 只是显示名，不参与分组）
+    const group = resolveGroup(
+      incoming.matchedRule,
+      incoming.domain,
+      watchlist,
+      this.adapters,
+    );
 
     // 2. 闸门 + 解析：同一个正则既决定「这一页算不算作品页」，也抠出作品身份
     if (group.rules.length > 0 && !matchesRegex(group.rules, incoming.title, incoming.url)) {
@@ -430,6 +461,7 @@ class VisitStore {
           updatedAt: scored.newUpdatedAt,
           workId,
           edition,
+          site: group.key,
           // 回访没带页面采集（旧上报 / dwell-time）时不要把它抹掉：原始字段是历史事实。
           ...(incoming.pageSignature || incoming.pageFields
             ? {
@@ -466,6 +498,7 @@ class VisitStore {
         ogImage: incoming.ogImage || "",
         workId,
         edition,
+        site: group.key,
         pageSignature: incoming.pageSignature,
         pageFields: incoming.pageFields,
       },

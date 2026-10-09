@@ -6,13 +6,13 @@ const fs = require("fs");
 // Use an in-memory SQLite DB for tests
 const TEST_DB = ":memory:";
 
-function createStore() {
-  const store = new RecordStore(TEST_DB, () => {});
+function createStore(adapters) {
+  const store = new RecordStore(TEST_DB, () => {}, adapters ? { adapters } : {});
   return store;
 }
 
-async function initStore() {
-  const store = createStore();
+async function initStore(adapters) {
+  const store = createStore(adapters);
   await store.init();
   return store;
 }
@@ -606,7 +606,14 @@ async function runTests() {
   // 调用方不再提供查重回调，所以这些规则只能在 store 上测。
   console.log("\nTest: recordVisit — 一条访问走一条通道");
   {
-    const s = await initStore();
+    // 镜像由适配器声明：example.com 与 example-mirror.com 是同一个站点
+    const s = await initStore([
+      {
+        file: "example.json",
+        name: "Example",
+        mirrors: [["example.com", "example-mirror.com"]],
+      },
+    ]);
     s.addWatchlist({
       domain: "example.com",
       label: "某站",
@@ -614,10 +621,10 @@ async function runTests() {
       regexFilter: "/video/(?<code>[0-9]+)",
       regexTarget: "url",
     });
-    // 镜像：同一个站点（同 label）的另一个域名，只多提供一条版本规则
+    // 镜像：适配器声明为同一个站点的另一个域名，只多提供一条版本规则
     s.addWatchlist({
       domain: "example-mirror.com",
-      label: "某站",
+      label: "某站镜像",
       color: "#fff",
       regexFilter: "(?<edition>中文字幕|无码)",
       regexTarget: "title",
@@ -785,10 +792,12 @@ async function runTests() {
   // 「这条访问该打开哪个地址」只由 RecordStore.resolveOpenUrl 一处判定。
   console.log("\nTest: 打开来源 — 分组内最近访问过的镜像");
   {
-    const s = await initStore();
-    // 同一站点（label 相同）的两个镜像域名 + 一个单域名站点
+    // 镜像由适配器声明（label 只是显示名）
+    const s = await initStore([
+      { file: "open.json", name: "Open", mirrors: [["aiqiyi.ai", "aiqiyi.com"]] },
+    ]);
     s.addWatchlist({ domain: "aiqiyi.ai", label: "爱奇艺", color: "#fff" });
-    s.addWatchlist({ domain: "aiqiyi.com", label: "爱奇艺", color: "#fff" });
+    s.addWatchlist({ domain: "aiqiyi.com", label: "爱奇艺备用", color: "#fff" });
     s.addWatchlist({ domain: "solo.com", label: "单站", color: "#fff" });
 
     const t1 = new Date(2026, 3, 1, 10).getTime();
@@ -820,14 +829,71 @@ async function runTests() {
     );
     assert(s.resolveOpenUrl("not a url") === "not a url", "解析不了的地址原样返回");
 
-    // 作品详情的来源行：点开的是「分组内最近访问过的地址」，与改动前一致
+    // 作品详情的来源行：镜像合并成一个来源，点开的是「组内最近访问过的地址」
     const detail = s.getWorkDetail(w.work.id);
-    const fromAi = detail.sources.find((x) => x.matchedRule === "aiqiyi.ai");
-    assert(fromAi.lastUrl === "https://aiqiyi.ai/v/1", "来源仍携带它自己那条最近地址");
+    assert(detail.sources.length === 1, "镜像合成一个来源（同一站点）");
+    const fromAi = detail.sources[0];
+    assert(fromAi.visitCount === 2, "来源带出组内全部访问次数");
+    assert(fromAi.lastUrl === "https://aiqiyi.com/v/2", "来源携带组内最近访问过的地址");
     assert(
-      s.resolveOpenUrl(fromAi.lastUrl) === "https://aiqiyi.com/v/1",
+      s.resolveOpenUrl(fromAi.lastUrl) === "https://aiqiyi.com/v/2",
       "来源行解析到分组内最近镜像，行为与改动前一致",
     );
+  }
+
+  // ── 回归：镜像由适配器声明，改标签文字不改变来源归属（issue #29） ──
+  console.log("\nTest: 镜像由适配器声明 — 改标签不改变来源归属");
+  {
+    const s = await initStore([
+      { file: "pair.json", name: "Pair", mirrors: [["site-a.com", "site-b.com"]] },
+    ]);
+    const entries = [
+      { domain: "site-a.com", label: "甲", color: "#fff", regexFilter: "/v/(?<code>[0-9]+)", regexTarget: "url" },
+      { domain: "site-b.com", label: "乙", color: "#fff", regexFilter: "/v/(?<code>[0-9]+)", regexTarget: "url" },
+    ];
+    s.updateWatchlist(entries);
+
+    const t1 = new Date(2026, 6, 1, 10).getTime();
+    const first = s.recordVisit({ id: "m1", url: "https://site-a.com/v/1", title: "剧", domain: "site-a.com", matchedRule: "site-a.com", tabId: 1, timestamp: t1 });
+    const mirror = s.recordVisit({ id: "m2", url: "https://site-b.com/v/1", title: "剧", domain: "site-b.com", matchedRule: "site-b.com", tabId: 2, timestamp: t1 + 1000 });
+    assert(mirror.action === "update", "不同标签、被适配器声明为镜像 → 仍是同一次访问");
+    assert(mirror.record.id === first.record.id, "镜像换域名不产生第二条访问");
+
+    const before = s.getWorkRow(first.work.id);
+    assert(before.sourceCount === 1 && before.sites.join(",") === "site-a.com", "镜像只算一个来源");
+
+    // 改标签：分组、来源归属与镜像选择都不变
+    s.updateWatchlist([
+      { ...entries[0], label: "换了名字" },
+      { ...entries[1], label: "另一个名字" },
+    ]);
+    const after = s.getWorkRow(first.work.id);
+    assert(after.sourceCount === 1 && after.sites.join(",") === "site-a.com", "改掉标签文字后来源归属不变");
+    assert(s.resolveOpenUrl("https://site-a.com/v/1") === "https://site-b.com/v/1", "改标签后镜像选择行为不变");
+
+    // 反例：label 相同但没被适配器声明为镜像 → 两个独立站点
+    const s2 = await initStore([]);
+    s2.addWatchlist({ domain: "x.com", label: "同名", color: "#fff" });
+    s2.addWatchlist({ domain: "y.com", label: "同名", color: "#fff" });
+    const x = s2.recordVisit({ id: "x1", url: "https://x.com/v/1", title: "剧", domain: "x.com", matchedRule: "x.com", tabId: 1, timestamp: t1 });
+    const y = s2.recordVisit({ id: "y1", url: "https://y.com/v/1", title: "剧", domain: "y.com", matchedRule: "y.com", tabId: 2, timestamp: t1 });
+    assert(x.action === "insert" && y.action === "insert", "label 相等不再分组：两次都是新访问");
+  }
+
+  // ── 老库迁移：启动时按适配器补齐 records.site（issue #29） ──
+  console.log("\nTest: 老库 records.site 迁移");
+  {
+    const s = await initStore([
+      { file: "legacy.json", name: "Legacy", mirrors: [["old.com", "old-mirror.com"]] },
+    ]);
+    // 模拟新列出现之前落库的访问（site 为 NULL）
+    s._dbRun(
+      "INSERT INTO records (id, url, title, domain, matchedRule, tabId, timestamp, site) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+      ["legacy-1", "https://old-mirror.com/v/1", "旧", "old-mirror.com", "old-mirror.com", 1, Date.now()],
+    );
+    assert(s.backfillSites() === 1, "补写一条老访问的 site");
+    assert(s.getRecordById("legacy-1").site === "old.com", "site 按适配器声明的镜像组补齐");
+    assert(s.backfillSites() === 0, "已经有 site 的不再补");
   }
 
   // ── 一条访问一条广播：带作品行与统计，供界面就地更新（issue #24） ──

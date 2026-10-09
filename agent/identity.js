@@ -164,7 +164,7 @@ function synopsisPrefix(raw, len = 40) {
   return s.slice(0, len);
 }
 
-/** 同一个站点的镜像判定用不到这里 —— 见 cluster.resolveGroupLabel。 */
+/** 同一个站点的镜像判定用不到这里 —— 见 cluster.mirrorGroupFor。 */
 
 const CONFIDENCE = { high: 2, medium: 1, low: 0 };
 

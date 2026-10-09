@@ -1,5 +1,6 @@
 // Sites domain: the watchlist — user-registered sites, their labels/colors and
-// regex rules. Mirrors are the same label on another domain (CONTEXT.md: 站点/镜像).
+// regex rules. Mirror grouping is declared by adapters (CONTEXT.md: 站点/镜像);
+// the label is a display name (and the key of the UI's site filter), not a grouping key.
 // Testable with only the `watchlist` table: `SiteStore.schema(db)`.
 
 const { getGroupDomains } = require("../cluster");
@@ -83,6 +84,7 @@ class SiteStore {
   /**
    * 把一个站点筛选值（watchlist 标签，或未登记站点的原始 matchedRule）
    * 解析成 matchedRule 列表。“all”/空 返回 null 表示不筛选。
+   * 按 label 取域名只是界面筛选，与镜像判定无关（后者由适配器声明）。
    * @param {string} value
    * @returns {string[]|null}
    */

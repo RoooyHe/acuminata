@@ -130,27 +130,57 @@ async function runTests() {
     assert(nextDay.newScore === 6, '隔天回访 +1');
   }
 
-  // ── 分组：label 相同即同一个站点（镜像归回一组） ──
+  // ── 分组：适配器声明的镜像归回一组（label 只是显示名） ──
   {
-    console.log('分组：label → 同组域名与规则');
+    console.log('分组：适配器 mirrors → 同组域名与规则');
     const watchlist = makeWatchlist([
       { domain: "example.com", label: "某站", regexFilter: "/video/" },
-      { domain: "example-mirror.com", label: "某站", regexFilter: "/vod/" },
+      { domain: "example-mirror.com", label: "某站的镜像", regexFilter: "/vod/" },
       { domain: "other.com" },
     ]);
-    const group = resolveGroup("example-mirror.com", "example-mirror.com", watchlist);
-    assert(group.label === '某站', '镜像域名归到同一个 label');
+    const adapters = [{ file: "site.json", mirrors: [["example.com", "example-mirror.com"]] }];
+    const group = resolveGroup(
+      "example-mirror.com",
+      "example-mirror.com",
+      watchlist,
+      adapters,
+    );
     assert(
       group.domains.join(",") === "example.com,example-mirror.com",
-      '同组域名都取到（镜像都算同一个站点）',
+      '同组域名都取到（镜像算同一个站点）',
     );
+    assert(group.key === 'example.com', '规范键是组里第一个域名（来源只此一个）');
     assert(group.rules.length === 2, '同组的规则都取到（闸门与解析共用同一份）');
+
+    // 扩展报的是实际主机名 + 命中的登记域名；镜像按登记域名查
+    const sub = resolveGroup(
+      "example.com",
+      "m.example.com",
+      watchlist,
+      adapters,
+    );
+    assert(
+      sub.domains.join(",") === "example.com,example-mirror.com",
+      '子域名访问按登记域名找到镜像组（不拆成新来源）',
+    );
+    assert(sub.rules.length === 2, '子域名访问的闸门/解析规则同样取到');
+
+    // 同一 label 但没被适配器声明为镜像的两个域名，不该并成一组
+    const labelOnly = makeWatchlist([
+      { domain: "a.com", label: "同名" },
+      { domain: "b.com", label: "同名" },
+    ]);
+    assert(
+      resolveGroup("b.com", "b.com", labelOnly, []).domains.join(",") === "b.com",
+      'label 相等不再分组（镜像只来自适配器声明）',
+    );
+
     assert(
       resolveGroupLabel("other.com", "other.com", watchlist) === 'other.com',
       '没有 label 时退回域名',
     );
     assert(
-      resolveGroup("unknown.com", "unknown.com", watchlist).label === 'unknown.com',
+      resolveGroup("unknown.com", "unknown.com", watchlist, []).label === 'unknown.com',
       '未登记站点退回域名',
     );
   }
