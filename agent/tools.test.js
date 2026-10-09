@@ -38,7 +38,7 @@ async function runTests() {
   console.log("Agent write store is a narrow interface");
   assert(
     Object.keys(writeStore).sort().join(",") ===
-      "addAgentRecord,deleteRecords,updateRecordScore,updateWatchlistRegex",
+      "deleteRecords,recordVisit,updateRecordScore,updateWatchlistRegex",
     "exposes only the four named operations",
   );
   assert(
@@ -58,9 +58,70 @@ async function runTests() {
   assert(added.reason === "推荐", "returns reason");
   const inserted = store.getRecordById(added.added);
   assert(inserted !== null, "record is persisted");
-  assert(inserted.pinned === 1 && inserted.score === 1, "agent-added record is pinned and scored 1");
+  assert(
+    inserted.pinned === 0 && inserted.score === null,
+    "visit-level score follows the same daily rules as a reported visit",
+  );
   const addEvent = events.find((e) => e.type === "recordAdded");
   assert(addEvent && addEvent.record && addEvent.record.id === added.added, "broadcasts recordAdded with the record");
+
+  console.log("\nadd_record 归入作品（与浏览器上报同一条通道）");
+  store.addWatchlist({
+    domain: "example.com",
+    label: "某站",
+    color: "#fff",
+    regexFilter: "/video/(?<code>[0-9]+)",
+    regexTarget: "url",
+  });
+  const attributed = executeTool("add_record", {
+    url: "https://example.com/video/123",
+    title: "带身份键的作品",
+    domain: "example.com",
+    matched_rule: "example.com",
+    reason: "推荐",
+  });
+  const attributedRecord = store.getRecordById(attributed.added);
+  assert(attributedRecord !== null, "访问落库");
+  assert(
+    attributedRecord.workId !== null && attributed.workId === attributedRecord.workId,
+    "访问归入一部作品，工具把 workId 带回来",
+  );
+  const attributedWork = store.getWork(attributedRecord.workId);
+  assert(attributedWork !== null && attributedWork.score === 1, "作品出现且分数为 1");
+  const worksPage = store.getWorksPage(1, 10);
+  assert(
+    worksPage.works.some(
+      (w) => w.id === attributedWork.id && w.score === 1 && w.visitCount === 1,
+    ),
+    "作品视图里看得到它（分数与访问数正确）",
+  );
+  const beforeRepeat = store.getRecordsPage(1, 100, "all").total;
+  const duplicate = executeTool("add_record", {
+    url: "https://example.com/video/123",
+    title: "带身份键的作品",
+    domain: "example.com",
+    matched_rule: "example.com",
+    reason: "推荐",
+  });
+  assert(duplicate.added === null && duplicate.duplicate === true, "重报同一条访问是重复，不是新增");
+  assert(
+    store.getRecordsPage(1, 100, "all").total === beforeRepeat,
+    "60s 内重报同一条访问不再多出一条（走同一条去重）",
+  );
+  assert(store.getWorksPage(1, 10).total === worksPage.total, "也不多建作品");
+
+  const rejected = executeTool("add_record", {
+    url: "https://example.com/article/9",
+    title: "列表页",
+    domain: "example.com",
+    matched_rule: "example.com",
+    reason: "推荐",
+  });
+  assert(rejected.error === "no-rule-match", "适配器闸门不认的页面不产生访问，工具带出原因");
+  assert(
+    store.getRecordsPage(1, 100, "all").total === beforeRepeat,
+    "被闸门丢弃的页面没有落库",
+  );
 
   console.log("\nupdate_record_score");
   const scored = executeTool("update_record_score", { id: added.added, score: 42, reason: "好看" });

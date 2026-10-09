@@ -692,6 +692,68 @@ async function runTests() {
     assert(s.getRecordsPage(1, 10, "all").total === 2, "两个站两条访问，一条不少");
   }
 
+  console.log("\nTest: 删除访问后不留孤儿作品分数（issue #18）");
+  {
+    const s = await initStore();
+    s.addWatchlist({
+      domain: "example.com",
+      label: "某站",
+      color: "#fff",
+      regexFilter: "/video/(?<code>[0-9]+)",
+      regexTarget: "url",
+    });
+    const day1 = new Date(2026, 5, 1, 10).getTime();
+    const day2 = new Date(2026, 5, 2, 10).getTime();
+    const visit = (over = {}) =>
+      s.recordVisit({
+        id: "del-1",
+        url: "https://example.com/video/7",
+        title: "剧",
+        domain: "example.com",
+        matchedRule: "example.com",
+        tabId: 1,
+        timestamp: day1,
+        ...over,
+      });
+
+    // 同一部作品的两条访问（路径不同、身份键相同：尾斜杠）
+    const a = visit({ id: "del-1", url: "https://example.com/video/7" });
+    const workId = a.work.id;
+    visit({ id: "del-2", url: "https://example.com/video/7/", tabId: 2, timestamp: day2 });
+    assert(s.getWork(workId).score === 2, "同一部作品两次跨天访问，分数为 2");
+    assert(s.getWorksPage(1, 10).total === 1, "作品视图里有它");
+
+    // 删掉其中一条：作品还有别的访问，作品与分数必须保留
+    s.deleteRecords(["del-1"]);
+    assert(s.getWork(workId) !== null, "作品还有别的访问时不被删掉");
+    assert(s.getWork(workId).score === 2, "分数不变（判定已做出并落库）");
+    assert(s.getWorksPage(1, 10).total === 1, "作品仍在视图里");
+
+    // 删掉最后一条：作品与它的身份键一起消失，不留孤儿分数
+    s.deleteRecords(["del-2"]);
+    assert(s.getWork(workId) === null, "删掉最后一条访问，作品行不再存在");
+    assert(s.getWorksPage(1, 10).total === 0, "作品视图里没有留下没有访问的分数");
+    assert(s._dbAll("SELECT * FROM work_keys").length === 0, "身份键跟着作品一起清掉");
+    assert(s.getUnattributedCount() === 0, "也没有留下未归属的访问");
+
+    // 清空全部访问同样不留孤儿分数
+    visit({ id: "del-3" });
+    assert(s.getWorksPage(1, 10).total === 1, "重新建起作品");
+    s.clearRecords();
+    assert(s.getWorksPage(1, 10).total === 0, "clearRecords 后没有孤儿作品分数");
+
+    // 适配器改版后，回访把记录从旧作品上挪走了：旧作品同样不该留下孤儿分数
+    visit({ id: "rew-1" });
+    const rewritten = s.getRecordById("rew-1").workId;
+    assert(rewritten !== null, "改版前归到了作品");
+    s.updateWatchlistRegex("example.com", "/video/", "url");
+    const detached = visit({ id: "rew-2", tabId: 2, timestamp: day2 });
+    assert(detached.record.workId === null, "改版后回访认不出作品");
+    assert(s.getWork(rewritten) === null, "旧作品没有访问了，不留孤儿分数");
+    assert(s._dbAll("SELECT * FROM work_keys").length === 0, "它的身份键也一起清掉");
+    assert(s.getRecordsPage(1, 10, "all").total === 1, "访问本身还在，只是未归属");
+  }
+
   console.log("\n✅ All RecordStore tests passed!");
   process.exit(0);
 }

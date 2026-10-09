@@ -170,7 +170,7 @@ const TOOLS = [
   {
     name: "add_record",
     description:
-      "Manually add a new record to the browsing history. Use this to bookmark recommended resources the agent discovered.",
+      "Manually add a new record to the browsing history. Use this to bookmark recommended resources the agent discovered. The record is attributed to a work the same way a browser-reported visit is; if the site's adapter rule does not match the URL, nothing is added.",
     category: "write",
     input_schema: {
       type: "object",

@@ -83,7 +83,8 @@ function updateRecordScore(args, ctx) {
 
 function addRecord(args, ctx) {
   const now = Date.now();
-  const record = {
+  // 一次访问该带的原始字段；计分与作品归属由写入通道统一决定，不在这里算。
+  const visit = {
     id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
     url: args.url,
     title: args.title || "",
@@ -93,11 +94,11 @@ function addRecord(args, ctx) {
     timestamp: now,
   };
   return {
-    added: record.id,
+    added: visit.id,
     url: args.url,
     reason: args.reason || "",
     _sideEffects: {
-      record,
+      visit,
       reason: args.reason || "",
     },
   };

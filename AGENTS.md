@@ -64,7 +64,7 @@ Key columns in `records`: `id`, `url`, `title`, `domain`, `matchedRule`, `tabId`
 
 Deduplication: same URL + same tabId within 60s is ignored. `chrome://` and `chrome-extension://` URLs are never tracked.
 
-The **visit write path** is one call, `RecordStore.recordVisit(incoming)` — 闸门 → 身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库, all inside `agent/record-store.js` so the call order is testable. `main.js` calls it once per reported visit and only decides what to broadcast; callers never pass a dedup callback. Within it: same-path URLs across different domains in the same watchlist group are treated as duplicates, and daily re-visits auto-pin records with score increment (max 1/day). Identity keys and the pure rules live in `agent/identity.js` / `agent/cluster.js`.
+The **visit write path** is one call, `RecordStore.recordVisit(incoming)` — 闸门 → 身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库, all inside `agent/record-store.js` so the call order is testable. `main.js` calls it once per reported visit and only decides what to broadcast; callers never pass a dedup callback. The agent's `add_record` tool goes through the same call via `getAgentWriteStore().recordVisit` — there is no second implementation of the attribution channel. Removing visits (single, batch, or all) sweeps works left with none, so no orphan work score survives; moving a visit off its work on a re-visit sweeps it too. Within it: same-path URLs across different domains in the same watchlist group are treated as duplicates, and daily re-visits auto-pin records with score increment (max 1/day). Identity keys and the pure rules live in `agent/identity.js` / `agent/cluster.js`.
 
 ## IPC channels (renderer ↔ main)
 

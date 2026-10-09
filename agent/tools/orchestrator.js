@@ -61,9 +61,20 @@ function createExecuteTool(ctx) {
     }
 
     if (name === "add_record" && se) {
-      const { record, reason } = se;
-      writeStore.addAgentRecord(record);
-      return { added: record.id, url: record.url, reason };
+      const { visit, reason } = se;
+      // 和浏览器上报共用同一条通道：闸门 → 身份键 → 去重 → 计分 → 归属 → 落库。
+      const result = writeStore.recordVisit(visit);
+      if (result.action === "drop") return { error: "no-rule-match", reason };
+      // 60s 内重报：那一次访问已经在库里，这次没有新增。
+      if (result.action === "ignore") {
+        return { added: null, duplicate: true, url: visit.url, reason };
+      }
+      return {
+        added: result.record ? result.record.id : null,
+        url: visit.url,
+        workId: result.work ? result.work.id : null,
+        reason,
+      };
     }
 
     return computed;
