@@ -20,6 +20,8 @@
   "name": "某平台",
   "detect": { "pageGlobal": "maccms" },
 
+  "mirrors": [["example.com", "example-mirror.com"]],
+
   "collect": [
     { "field": "codeFromDom", "selector": "span.video-code", "attr": "text" },
     { "field": "duration",    "selector": "meta[itemprop='duration']", "attr": "content" },
@@ -49,6 +51,7 @@
 |---|---|---|
 | `detect` | ✅ | **页面签名**，如 `{"pageGlobal":"maccms"}`。适配器按平台组织，不按域名 |
 | `domains` | | 可选的快速匹配域名。**尚未被读取**——检测只看签名（ADR-0006） |
+| `mirrors` | | **可选。** 声明哪些域名是**同一个站点**的镜像：`[["原站","镜像"]]`（若干组）。来源归属与去重据此，**不再看 `watchlist.label` 是否相等**（#29） |
 | `name` | | 适配器名（平台名） |
 | `collect` | | **可选。** 从页面 DOM 抽取具名字段。没有它，就只能用内置的五个字段 |
 | `parse` | | 从具名字段里用正则取出身份字段 |
@@ -207,7 +210,7 @@
 
 | 已读 | 未读（写了但没人读，别用） |
 |---|---|
-| `detect.pageGlobal`、`collect`（含 `many`、选择器/属性有序备选）、`parse`（`from` / 命名捕获组） | `domains`、`{label:"主演"}` 与 `attr:"a@text"`（按标签文本定位）、`list` 列表页 |
+| `detect.pageGlobal`、`collect`（含 `many`、选择器/属性有序备选）、`parse`（`from` / 命名捕获组）、`mirrors` | `domains`、`{label:"主演"}` 与 `attr:"a@text"`（按标签文本定位）、`list` 列表页 |
 
 `loadAdapters()` 能读 `adapters/` 目录（内置与用户写在同一个目录、同一段代码，没有特权路径），
 `RecordStore` 启动时读一次，交给两处：

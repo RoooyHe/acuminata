@@ -3,7 +3,7 @@
 // (open → schema → seed → dirty/export) and wires the domains together:
 //
 //   settings        设置（含窗口位置、语言、AI 配置）
-//   sites           站点（watchlist / 镜像分组 / 正则规则）
+//   sites           站点（watchlist / 正则规则；镜像由适配器声明）
 //   works           作品（身份键、跨站融合、计分、回填）
 //   visits          访问（记录、统计、写入路径 recordVisit）
 //   agent           agent 对话 / 记忆 / 待审批动作 / 画像
@@ -66,6 +66,8 @@ class RecordStore {
       module.schema(this.db);
     }
     this._sites.seedDefaults();
+    // 老库没有 records.site：按适配器声明的镜像补一次，镜像从一开始就只算一个来源。
+    this._visits.backfillSites();
   }
 
   onDirty(fn) {
@@ -93,6 +95,9 @@ class RecordStore {
   getAdapters() {
     return this._adapters;
   }
+
+  /** 老库的 records.site 迁移（来源键来自适配器声明的镜像）。 */
+  backfillSites() { return this._visits.backfillSites(); }
 
   getWatchlist() { return this._sites.getWatchlist(); }
   addWatchlist(entry) { return this._sites.addWatchlist(entry); }

@@ -187,6 +187,8 @@
 
   /**
    * 从访问列表推导来源行（站点 + 版本），与 store 的聚合同形。
+   * 站点用 `visit.site`（适配器声明的镜像组的规范域名），镜像因此只算一个来源；
+   * 老记录没有 site 时退回 matchedRule。
    * 一条新访问只改一条来源行（或新增一行），不需要回头查库。
    * @param {Array<Object>} visits
    * @returns {Array<Object>}
@@ -194,11 +196,12 @@
   function deriveSources(visits) {
     const byKey = new Map();
     for (const v of visits || []) {
-      const key = (v.matchedRule || "") + "\u0000" + (v.edition || "");
+      const site = v.site || v.matchedRule;
+      const key = (site || "") + "\u0000" + (v.edition || "");
       let s = byKey.get(key);
       if (!s) {
         s = {
-          matchedRule: v.matchedRule,
+          matchedRule: site,
           edition: v.edition || "",
           visitCount: 0,
           lastVisitAt: 0,

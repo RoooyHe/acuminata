@@ -7,18 +7,21 @@
 const {
   resolveWorkScore,
   identityKeysFor,
-  getGroupDomains,
+  mirrorGroupFor,
+  siteKeyFor,
 } = require("../cluster");
 const { KEY_KINDS, CONFIDENCE } = require("../identity");
 const { uuid, now } = require("./ids");
 const { fromJson } = require("./json-column");
 
 // 作品列表行的聚合 SELECT：getWorksPage 与 getWorkRow 共用，行形状只此一处。
+// 来源按 `site`（适配器声明的镜像组的规范域名）聚合：同一站点的镜像只算一个来源；
+// site 为空的老库退回 matchedRule。
 const WORK_ROW_SELECT = `SELECT w.*,
         COUNT(r.id) AS visitCount,
         COALESCE(MAX(r.timestamp), 0) AS lastVisitAt,
-        COUNT(DISTINCT r.matchedRule) AS sourceCount,
-        COALESCE(GROUP_CONCAT(DISTINCT r.matchedRule), '') AS siteRules
+        COUNT(DISTINCT COALESCE(r.site, r.matchedRule)) AS sourceCount,
+        COALESCE(GROUP_CONCAT(DISTINCT COALESCE(r.site, r.matchedRule)), '') AS siteRules
  FROM works w
  LEFT JOIN records r ON r.workId = w.id`;
 
@@ -291,33 +294,39 @@ class WorkStore {
     if (!work) return null;
 
     const visits = this.db.all(
-      `SELECT id, url, title, domain, matchedRule, timestamp, dwellTime, pinned, score, edition
+      `SELECT id, url, title, domain, site, matchedRule, timestamp, dwellTime, pinned, score, edition
        FROM records WHERE workId = ? ORDER BY timestamp DESC`,
       [workId],
     );
 
-    const sources = this.db.all(
-      `SELECT r.matchedRule, r.edition,
-              COUNT(*) AS visitCount,
-              MAX(r.timestamp) AS lastVisitAt,
-              (SELECT r2.url FROM records r2
-                 WHERE r2.workId = r.workId AND r2.matchedRule = r.matchedRule AND r2.edition = r.edition
-                 ORDER BY r2.timestamp DESC LIMIT 1) AS lastUrl
-       FROM records r WHERE r.workId = ?
-       GROUP BY r.matchedRule, r.edition
-       ORDER BY lastVisitAt DESC`,
-      [workId],
-    );
+    // 来源按**站点**（适配器声明的镜像组）+ 版本分组：镜像合成一个来源，
+    // 最近地址取组里最近那一条。site 为空的老库退回 matchedRule。
+    const sources = this.db
+      .all(
+        `SELECT COALESCE(r.site, r.matchedRule) AS siteRule, r.edition,
+                COUNT(*) AS visitCount,
+                MAX(r.timestamp) AS lastVisitAt,
+                (SELECT r2.url FROM records r2
+                   WHERE r2.workId = r.workId
+                     AND COALESCE(r2.site, r2.matchedRule) = COALESCE(r.site, r.matchedRule)
+                     AND r2.edition = r.edition
+                   ORDER BY r2.timestamp DESC LIMIT 1) AS lastUrl
+         FROM records r WHERE r.workId = ?
+         GROUP BY COALESCE(r.site, r.matchedRule), r.edition
+         ORDER BY lastVisitAt DESC`,
+        [workId],
+      )
+      .map(({ siteRule, ...s }) => ({ ...s, matchedRule: siteRule }));
 
     return { work, sources, visits };
   }
 
   /**
-   * 「这条访问该打开哪个地址」：分组（label 相同 = 同一站点的镜像）内
+   * 「这条访问该打开哪个地址」：镜像组（适配器声明的 `mirrors`）内
    * **最近访问过**的镜像域名。来源解析只此一处——IPC 层只把地址交给它，
    * 自己不查库、不拼分组。
    *
-   * 只换域名、保留路径；认不出分组、组内只有一个域名、或地址解析不了时原样返回。
+   * 只换域名、保留路径；认不出镜像组、组内只有一个域名、或地址解析不了时原样返回。
    * @param {string} url
    * @returns {string}
    */
@@ -327,7 +336,7 @@ class WorkStore {
       const watchlist = this.sites.getWatchlist();
       const entry = watchlist.find((w) => w.domain === u.hostname || url.includes(w.domain));
       if (!entry) return url;
-      const domains = getGroupDomains(entry.label || entry.domain, watchlist, entry.domain);
+      const domains = mirrorGroupFor(entry.domain, this.adapters);
       if (domains.length < 2) return url;
       const placeholders = domains.map(() => "?").join(",");
       const latest = this.db.get(
@@ -432,9 +441,10 @@ class WorkStore {
         if (visit.ambiguous) ambiguous++;
         if (visit.created) created++;
         if (visit.work) {
-          this.db.run("UPDATE records SET workId = ?, edition = ? WHERE id = ?", [
+          this.db.run("UPDATE records SET workId = ?, edition = ?, site = ? WHERE id = ?", [
             visit.work.id,
             (extracted && extracted.edition) || "",
+            siteKeyFor(row.domain, this.adapters),
             row.id,
           ]);
           assigned++;
@@ -493,7 +503,7 @@ class WorkStore {
    * 不在这张表里。records.pageSignature / records.pageFields 是原始字段，不在清空之列。
    */
   _clearWorkAttribution() {
-    this.db.run("UPDATE records SET workId = NULL, edition = ''");
+    this.db.run("UPDATE records SET workId = NULL, edition = '', site = NULL");
     this.db.run("DELETE FROM work_ambiguities");
     this.db.run("DELETE FROM work_keys");
     this.db.run("DELETE FROM works");

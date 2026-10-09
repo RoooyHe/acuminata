@@ -63,7 +63,7 @@ Tables: `records`, `works`, `work_keys`, `watchlist`, `settings`, `recommendatio
 
 `records` is a **visit event**; `works` is the content itself, fused across sites. `work_keys` holds one or more identity keys per work (content code / cover hash / normalized title / synopsis fingerprint) — any single match merges. Daily +1 scoring lives on `works`, so the same work watched on two sites accumulates into one score.
 
-Key columns in `records`: `id`, `url`, `title`, `domain`, `matchedRule`, `tabId`, `timestamp`, `pinned`, `score`, `workId`, `createdAt`, `updatedAt`. `pageSignature` (JSON) and `pageFields` (JSON) persist what the extension saw on the page — they are the pure input to `parse`, so re-running parsing needs no re-fetch.
+Key columns in `records`: `id`, `url`, `title`, `domain`, `site` (adapters' declared mirror group's canonical domain, so mirrors are one source), `matchedRule`, `tabId`, `timestamp`, `pinned`, `score`, `workId`, `createdAt`, `updatedAt`. `pageSignature` (JSON) and `pageFields` (JSON) persist what the extension saw on the page — they are the pure input to `parse`, so re-running parsing needs no re-fetch.
 
 Deduplication: same URL + same tabId within 60s is ignored. `chrome://` and `chrome-extension://` URLs are never tracked.
 
