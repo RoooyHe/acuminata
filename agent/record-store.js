@@ -19,6 +19,7 @@ const {
   matchesRegex,
 } = require("./cluster");
 const { KEY_KINDS, CONFIDENCE } = require("./identity");
+const { loadAdapters } = require("./adapters");
 
 function uuid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -43,12 +44,15 @@ class RecordStore {
   /**
    * @param {string} dbPath
    * @param {Function} [broadcast] - (type, payload) => void
+   * @param {{adapters?:Array<Object>}} [options] 适配器缺省从 `adapters/` 目录读（内置与用户共用）
    */
-  constructor(dbPath, broadcast) {
+  constructor(dbPath, broadcast, options = {}) {
     this.dbPath = dbPath;
     this.broadcast = broadcast || (() => {});
     this.db = null;
     this._watchers = [];
+    // 适配器只在启动时读一次：写入路径用它，推给扩展去页面采集的也是同一份。
+    this._adapters = options.adapters || loadAdapters();
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -270,6 +274,11 @@ class RecordStore {
 
   getWatchlist() {
     return this._dbAll("SELECT * FROM watchlist");
+  }
+
+  /** 适配器（内置与用户写在同一个目录）。写路径用它们，扩展也拿这一份去采集页面。 */
+  getAdapters() {
+    return this._adapters;
   }
 
   addWatchlist(entry) {
@@ -670,7 +679,12 @@ class RecordStore {
    *
    * @param {Object} incoming 扩展上报的访问：
    *        {url, title, domain, matchedRule, tabId, timestamp, id?,
-   *         favIconUrl?, description?, ogImage?}
+   *         favIconUrl?, description?, ogImage?, pageSignature?, pageFields?}
+   *        `pageSignature` / `pageFields` 是扩展看到的**页面签名**与该页上各适配器
+   *        collect 抽到的字段（`shared/page-collect.js`）；认平台在这一端做，
+   *        所以没有用户正则的站点也能拿到编号身份键。
+   *        ponytail: 回传的字段只用于本次判定，没落库——重跑全历史（#27）需要
+   *        records 上的一个原始字段列。
    * @returns {{ action:"drop"|"ignore"|"insert"|"update", reason?:string,
    *            record?:Object, work?:Object|null, ambiguous?:boolean,
    *            keys?:Array<{kind:string,value:string,confidence:string}>, extracted?:Object }}
@@ -692,9 +706,12 @@ class RecordStore {
       // 这里会静默丢历史——调用方必须统计 no-rule-match 并告警（docs/adr/0003）。
       return { action: "drop", reason: "no-rule-match" };
     }
+    // ponytail: 没写正则的站点这里就没有闸门——列表页也会被收下，而适配器会给它
+    // 抠出列表第一项的编号（误合）。适配器声明列表页（#30）到位后，闸门应当由
+    // 适配器自己说，而不是看这里的规则集合是不是空的。
 
     // 3. 作品身份键。拿不到任何键也照常往下走，只是后面归不到作品（降级而非丢弃）。
-    const { extracted, keys } = identityKeysFor(incoming, watchlist, group.rules);
+    const { extracted, keys } = identityKeysFor(incoming, watchlist, group.rules, this._adapters);
 
     // 4. 同组同路径去重：镜像上的同一个页面是同一次访问
     const existing = this._findVisitByPath(group.domains, extractPath(incoming.url));
@@ -1187,7 +1204,7 @@ class RecordStore {
         cursorTs = row.timestamp;
         cursorId = row.id;
         processed++;
-        const { keys } = identityKeysFor(row, watchlist);
+        const { keys } = identityKeysFor(row, watchlist, undefined, this._adapters);
         const visit = this.recordWorkVisit({
           keys,
           title: row.title,

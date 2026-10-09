@@ -1,4 +1,4 @@
-import type { WatchlistEntry, HistoryRecord } from "../shared/types"
+import type { Adapter, WatchlistEntry, HistoryRecord } from "../shared/types"
 import { TabTracker } from "./tab-tracker"
 import { WsTransport } from "./ws-transport"
 
@@ -10,6 +10,8 @@ let watchlist: WatchlistEntry[] = []
 let enabled = true
 let records: HistoryRecord[] = []
 let mode: Mode = "ws"
+// 适配器由桌面端推过来（init）：扩展不自己持有适配器文件，只拿它去页面上抽字段。
+let adapters: Adapter[] = []
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
@@ -41,7 +43,7 @@ function matchesWatchlist(url: string): WatchlistEntry | null {
 
 async function saveLocal() {
   try {
-    await chrome.storage.local.set({ watchlist, enabled, records, mode })
+    await chrome.storage.local.set({ watchlist, enabled, records, mode, adapters })
   } catch (e) {
     // ignore
   }
@@ -54,16 +56,19 @@ async function loadLocal() {
       "enabled",
       "records",
       "mode",
+      "adapters",
     ])
     watchlist = (result.watchlist as WatchlistEntry[]) || []
     enabled = result.enabled !== false
     records = (result.records as HistoryRecord[]) || []
     mode = (result.mode as Mode) || "ws"
+    adapters = (result.adapters as Adapter[]) || []
   } catch (e) {
     watchlist = []
     enabled = true
     records = []
     mode = "ws"
+    adapters = []
   }
   // 扩展不再持有 AI 配置；清掉旧版本留下的 provider 与 API key。
   // 单独兜底：清理失败不能把已载入的状态清掉。
@@ -82,6 +87,7 @@ interface WsMessage {
   records?: HistoryRecord[]
   enabled?: boolean
   record?: HistoryRecord
+  adapters?: Adapter[]
 }
 
 function handleMessage(msg: WsMessage) {
@@ -89,6 +95,7 @@ function handleMessage(msg: WsMessage) {
     case "init":
       watchlist = msg.watchlist || []
       enabled = msg.enabled !== false
+      adapters = msg.adapters || []
       saveLocal()
       break
     case "watchlistUpdated":
@@ -132,7 +139,7 @@ function handleMessage(msg: WsMessage) {
 
 // ── Composition ───────────────────────────────────────────────────────────────
 
-const tracker = new TabTracker({ matchesWatchlist, extractDomain })
+const tracker = new TabTracker({ matchesWatchlist, extractDomain, getAdapters: () => adapters })
 const transport = new WsTransport()
 
 // Wire tracker events -> persistence + WS

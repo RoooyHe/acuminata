@@ -18,7 +18,8 @@ const path = require("path");
 const { parseHTML } = require("linkedom");
 const { coverHash } = require("./identity");
 const { AIQIYI } = require("./annotated-pair.fixture");
-const { pageGlobals, detect, collect, parseFields, identityForPage } = require("./adapter");
+const { detectBySignature, collectPage } = require("../shared/page-collect");
+const { identityForPage } = require("./adapter");
 const { loadAdapters } = require("./adapters");
 
 let passed = 0;
@@ -51,6 +52,10 @@ const adapters = loadAdapters();
 const aiqiyi = loadPage("maccms-aiqiyi.html", "https://www.aiqiyi.ai/voddetail/237486.html");
 const mgtvtv = loadPage("maccms-mgtvtv.html", "https://www.mgtvtv.com/tv/94425/");
 
+// 扩展在页面上跑的那一次（shared/page-collect.js 的 collectPage，注入页面用的就是它）
+const aiqiyiPage = collectPage(adapters, aiqiyi.root);
+const mgtvtvPage = collectPage(adapters, mgtvtv.root);
+
 /** 同一个内置适配器的副本，只改一处，用来验证「有序备选」的先后 */
 function variant(mutate) {
   const copy = JSON.parse(JSON.stringify(adapters));
@@ -60,11 +65,19 @@ function variant(mutate) {
 
 // ── ① 检测：按页面签名，不按域名、也不按 URL 形状 ──
 console.log("\n① 检测");
-ok(pageGlobals(aiqiyi.root).has("maccms"), "MacCMS 的签名来自内联脚本里的 var maccms=");
-eq(detect(aiqiyi, adapters).name, "MacCMS", "aiqiyi.ai 真页认出 MacCMS");
-eq(detect(mgtvtv, adapters).name, "MacCMS", "mgtvtv.com 真页用同一份适配器认出 MacCMS（路由与主题都不同）");
+ok(aiqiyiPage.pageSignature.includes("maccms"), "MacCMS 的签名来自内联脚本里的 var maccms=");
 eq(
-  detect(aiqiyi, [{ name: "Other", detect: { pageGlobal: "xiuno" } }]),
+  detectBySignature(aiqiyiPage.pageSignature, adapters).name,
+  "MacCMS",
+  "aiqiyi.ai 真页认出 MacCMS",
+);
+eq(
+  detectBySignature(mgtvtvPage.pageSignature, adapters).name,
+  "MacCMS",
+  "mgtvtv.com 真页用同一份适配器认出 MacCMS（路由与主题都不同）",
+);
+eq(
+  detectBySignature(aiqiyiPage.pageSignature, [{ name: "Other", detect: { pageGlobal: "xiuno" } }]),
   null,
   "签名对不上就认不出——检测看的是签名，不是域名",
 );
@@ -72,23 +85,28 @@ eq(identityForPage(aiqiyi, []), null, "没有适配器时返回 null，调用方
 
 // ── ② 采集：选择器与属性都是有序备选，第一个命中的胜出 ──
 console.log("\n② 采集");
-const aFields = collect(adapters[0], aiqiyi);
+const aFields = aiqiyiPage.pageFields["maccms.json"];
 ok(aFields.cover.includes("/upload/vod/"), "aiqiyi 取到真封面");
 ok(!aFields.cover.includes("load.gif"), "占位 src（load.gif）被属性备选跳过，取的是 data-original");
 ok(!!aFields.keywords, "meta[name=keywords] 也采到（parse 的第一路备选）");
 
-const mFields = collect(adapters[0], mgtvtv);
+const mFields = mgtvtvPage.pageFields["maccms.json"];
 eq(
   mFields.cover,
   "https://img.ukuapi88.com/upload/vod/20261007-1/153e35bbc840e3582c174c13a7680a01.jpg",
   "mgtvtv 真页没有 data-original：选择器备选落到第二条，拿到的是详情页封面而不是推荐位",
 );
-const many = collect(
-  { collect: [{ field: "covers", selector: "img[src*='/upload/vod/']", attr: "src", many: true }] },
-  mgtvtv,
-);
-eq(many.covers.length, 9, "many: true 返回该选择器命中的全部条目");
-ok(many.covers[0].includes(MGTVTV_CODE), "多值字段第一条就是详情页封面（文档顺序）");
+const many = collectPage(
+  [
+    {
+      file: "covers.json",
+      collect: [{ field: "covers", selector: "img[src*='/upload/vod/']", attr: "src", many: true }],
+    },
+  ],
+  mgtvtv.root,
+).pageFields["covers.json"].covers;
+eq(many.length, 9, "many: true 返回该选择器命中的全部条目");
+ok(many[0].includes(MGTVTV_CODE), "多值字段第一条就是详情页封面（文档顺序）");
 
 // ── ③ 解析与身份键 ──
 console.log("\n③ 解析与身份键");

@@ -2,7 +2,8 @@
 // Emits plain events; the caller persists them.
 // Designed so a future RecordStore abstraction can replace the persistence layer.
 
-import type { WatchlistEntry, HistoryRecord } from "../shared/types"
+import type { Adapter, WatchlistEntry, HistoryRecord } from "../shared/types"
+import { collectPage } from "../shared/page-collect"
 
 type RecordEvent = { type: "record"; data: HistoryRecord }
 type DwellTimeEvent = { type: "dwellTime"; data: HistoryRecord }
@@ -13,6 +14,8 @@ type DwellTimeCallback = (evt: DwellTimeEvent) => void
 interface TabTrackerDeps {
   matchesWatchlist: (url: string) => WatchlistEntry | null
   extractDomain: (url: string) => string | null
+  /** 桌面端推过来的适配器；扩展拿它们在页面上认签名、抽字段。 */
+  getAdapters: () => Adapter[]
 }
 
 class TabTracker {
@@ -87,32 +90,37 @@ class TabTracker {
       favIconUrl: favIconUrl || "",
     }
 
+    // 先进内存再去页面上取数据：同一页的并发上报因此在 await 之前就被去重挡住。
     this.records.unshift(record)
     if (this.records.length > this.maxRecords) this.records.splice(this.maxRecords)
     this.tabLastRecordId[tabId] = record.id
 
-    for (const cb of this.onRecordCbs) cb({ type: "record", data: record })
+    await this.injectPageData(tabId, record)
 
-    await this.injectMeta(tabId, record)
+    // 只发一次（带页面签名与采集字段）：这一条就是桌面端算身份键的输入。
+    for (const cb of this.onRecordCbs) cb({ type: "record", data: record })
   }
 
-  private async injectMeta(tabId: number, record: HistoryRecord) {
+  /**
+   * 页面上才有的那几样：简介、og:image、**页面签名**、适配器 collect 抽到的字段。
+   * `collectPage` 从 shared/ 来——桌面端测试用同一个函数跑真实页面夹具。
+   */
+  private async injectPageData(tabId: number, record: HistoryRecord) {
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId },
-        func: () => {
-          const desc = document.querySelector('meta[name="description"]')?.getAttribute("content") || ""
-          const ogImg = document.querySelector('meta[property="og:image"]')?.getAttribute("content") || ""
-          return { description: desc, ogImage: ogImg }
-        },
+        func: collectPage,
+        args: [this.deps.getAdapters()],
         injectImmediately: false,
       })
-      if (results?.[0]?.result) {
-        const { description, ogImage } = results[0].result as { description: string; ogImage: string }
-        record.description = description
-        record.ogImage = ogImage
-        for (const cb of this.onRecordCbs) cb({ type: "record", data: record })
-      }
+      const page = results?.[0]?.result as
+        | { description: string; ogImage: string; pageSignature: string[]; pageFields: HistoryRecord["pageFields"] }
+        | undefined
+      if (!page) return
+      record.description = page.description
+      record.ogImage = page.ogImage
+      record.pageSignature = page.pageSignature
+      record.pageFields = page.pageFields
     } catch (e) {
       // ignore — can't inject on chrome:// or restricted pages
     }

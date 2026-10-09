@@ -18,6 +18,8 @@
  */
 
 const { extractKeys } = require("./identity");
+const { detectBySignature } = require("../shared/page-collect");
+const { builtinFields, identityForFields } = require("./adapter");
 
 function resolveGroupLabel(matchedRule, domain, watchlist) {
   const currentWatch = watchlist.find((w) => w.domain === matchedRule);
@@ -155,31 +157,49 @@ function computeDailyScore(existing, now) {
 }
 
 /**
- * 一条访问的作品身份键：适配器的命名捕获组 + 页面字段。
+ * 一条访问的作品身份键，两路信号合流：
+ *
+ *   适配器 —— 扩展回传的**页面签名**认出平台，回传的 collect 字段跑 parse
+ *   旧规则 —— 站点登记上那个 `regexFilter` 的命名捕获组（既当闸门又当解析器）
+ *
+ * 适配器那一路是本轮（#26）之前没有的：没有用户正则的 MacCMS 站点也能拿到编号。
+ * 两路同名时**用户自己写的规则优先**——装了适配器不该让已经写了规则的站点
+ * 换一个解析结果（判定只做一次，见 docs/adr/0002）。
  *
  * 实时上报（RecordStore.recordVisit）与历史回填（RecordStore.backfillWorks）
- * 共用这一条路径（docs/adr/0002：判定只做一次、结论落库）。
- * 这里**不含闸门**——闸门只决定「这一页要不要收」，
+ * 共用这一条路径。这里**不含闸门**——闸门只决定「这一页要不要收」，
  * 回填面对的是已经收下的历史，不能因为适配器今天不匹配就把旧访问判死。
  *
+ * @param {Object} incoming 扩展上报的访问（可带 `pageSignature` / `pageFields`）
+ * @param {Array<Object>} watchlist
+ * @param {Array<Object>} [groupRules] 分组规则；不传则自己取（回填用）
+ * @param {Array<Object>} [adapters] 适配器；没有就是今天的行为（只有旧规则那一路）
  * @returns {{ extracted: object, keys: Array<{kind:string,value:string,confidence:string}> }}
  */
-function identityKeysFor(incoming, watchlist, groupRules) {
+function identityKeysFor(incoming, watchlist, groupRules, adapters) {
   const rules =
     groupRules ||
     getGroupRules(
       resolveGroupLabel(incoming.matchedRule, incoming.domain, watchlist),
       watchlist,
     );
-  const extracted = extractFromRules(rules, incoming.title, incoming.url);
+  const fromRules = extractFromRules(rules, incoming.title, incoming.url);
+  const builtin = builtinFields(incoming);
+  const adapter = detectBySignature(incoming.pageSignature, adapters);
+  const adapted = adapter
+    ? identityForFields(adapter, builtin, incoming.pageFields)
+    : null;
   const keys = extractKeys({
-    url: incoming.url,
-    title: incoming.title,
-    description: incoming.description,
-    ogImage: incoming.ogImage,
-    extracted,
+    url: builtin.url,
+    title: builtin.title,
+    description: builtin.description,
+    ogImage: builtin.ogImage,
+    extracted: { ...(adapted ? adapted.extracted : {}), ...fromRules },
   });
-  return { extracted, keys };
+  return {
+    extracted: { ...(adapted ? adapted.parsed : {}), ...fromRules },
+    keys,
+  };
 }
 
 /**
