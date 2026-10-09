@@ -5,7 +5,6 @@ const initSqlJs = require("sql.js");
 const path = require("path");
 const fs = require("fs");
 const {
-  buildAnalysisPrompt,
   buildDeleteReflectionPrompt,
   buildRejectReflectionPrompt,
 } = require("./prompts");
@@ -1364,10 +1363,6 @@ class RecordStore {
       );
     }
     return rows;
-  }
-
-  buildAnalysisPromptForRecords(records, watchlist) {
-    return buildAnalysisPrompt(records, watchlist);
   }
 
   buildDeleteReflectionPrompt(deletedRecords) {

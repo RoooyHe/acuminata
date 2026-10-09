@@ -1,6 +1,6 @@
 // 一条分析管道：构建好的提示词 → 调模型 → 抠 JSON → 解析（失败降级成截断文本）。
 // 这是全仓库唯一一份「模型回复 → JSON」的抽取与降级实现，分析与反思都从这里走（issue #17）。
-// 「什么字段离开了本机」只需核对提示词构建处（agent/prompts.js）和这里的 prompt。
+// 「什么字段离开了本机」只需核对提示词构建处（agent/prompts.js）。
 
 /** 从模型回复里抠出 JSON 对象；抠不到或解析失败返回 null。 */
 function readModelJson(providers, raw) {
@@ -28,11 +28,6 @@ function analysisFromReply(providers, raw) {
   };
 }
 
-/** 兴趣归纳：提示词 → { summary, keywords }。 */
-async function analyzePrompt(providers, prompt) {
-  return analysisFromReply(providers, await askModel(providers, prompt));
-}
-
 /** 反思：提示词 → 反思对象（没有 JSON 时返回 null，由调用方决定不落库）。 */
 async function reflectPrompt(providers, prompt) {
   return readModelJson(providers, await askModel(providers, prompt));
@@ -40,6 +35,5 @@ async function reflectPrompt(providers, prompt) {
 
 module.exports = {
   analysisFromReply,
-  analyzePrompt,
   reflectPrompt,
 };
