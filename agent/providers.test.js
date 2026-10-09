@@ -101,7 +101,7 @@ async function runTests() {
     console.log('Tools provider: OpenAI');
     const captured = [];
     const requestFn = async (url, opts, timeout) => {
-      captured.push({ body: JSON.parse(opts.body) });
+      captured.push({ url, body: JSON.parse(opts.body) });
       return {
         status: 200,
         data: JSON.stringify({
@@ -120,6 +120,7 @@ async function runTests() {
     };
     const providers = createAIProviders(() => ({ provider: 'openai', endpoint: 'http://localhost:9000/v1', apiKey: 'k', model: 'gpt' }), requestFn);
     const result = await providers.callWithTools([{ role: 'user', content: 'hi' }], [{ name: 'get_stats', description: '', input_schema: {} }]);
+    assert(captured[0].url === 'http://localhost:9000/v1/chat/completions', 'hits chat/completions once, not /v1/v1');
     assert(result.tool_calls.length === 1, 'returns one tool call');
     assert(result.tool_calls[0].name === 'get_stats', 'maps function name');
     assert(result.tool_calls[0].arguments === '{}', 'maps function arguments');
