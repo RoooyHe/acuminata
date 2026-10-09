@@ -540,6 +540,23 @@ class RecordStore {
     return { total, today, sites: uniqueSites, enabled: this.getEnabled(), domainCounts, topDomain, topDomainCount };
   }
 
+  /**
+   * 按 matchedRule 分组的访问计数：`{ total, stats: { [matchedRule]: count } }`。
+   * getStats 按 watchlist 标签聚合、还带今日/站点数等概览；扩展的 getStats
+   * 查询要的是原始站点粒度，所以单独一个名字。
+   */
+  getRuleStats() {
+    const stats = {};
+    const rows = this._dbAll(
+      "SELECT matchedRule, COUNT(*) as count FROM records GROUP BY matchedRule",
+    );
+    for (const r of rows) stats[r.matchedRule] = r.count;
+    return {
+      total: this._dbGetScalar("SELECT COUNT(*) as count FROM records"),
+      stats,
+    };
+  }
+
   searchRecords(query, limit = 50, minScore = 0, domain = "") {
     const q = `%${query}%`;
     let sql, params;
@@ -1378,6 +1395,19 @@ class RecordStore {
     return id;
   }
 
+  /**
+   * 一轮分析拦下的一批待审批动作入队。有变更就广播一次队列现状，
+   * 队列变化的可见性由 store 负责，调用方不再自己发事件。
+   */
+  insertPendingActions(conversationId, actions) {
+    for (const a of actions || []) {
+      this.insertPendingAction(conversationId, a.tool, a.args);
+    }
+    if (actions && actions.length > 0) {
+      this._emit("agentPendingUpdated", this.getPendingActions());
+    }
+  }
+
   getPendingActions() {
     return this._dbAll(
       "SELECT * FROM agent_pending_actions WHERE status = 'pending' ORDER BY created_at ASC",
@@ -1389,6 +1419,12 @@ class RecordStore {
       "UPDATE agent_pending_actions SET status = ?, resolved_at = ? WHERE id = ?",
       [status, now(), id],
     );
+  }
+
+  /** 批量裁决待审批动作，并广播一次队列现状。 */
+  resolvePendingActions(ids, status) {
+    for (const id of ids || []) this.resolvePendingAction(id, status);
+    this._emit("agentPendingUpdated", this.getPendingActions());
   }
 
   // ── AI Analysis Helpers ────────────────────────────────────────────────────

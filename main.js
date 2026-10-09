@@ -136,6 +136,11 @@ async function init() {
     providers: aiProviders,
     executeTool,
     getAdapterHealth: () => adapterHealth.snapshot(),
+    // agent 执行进度不是 store 的状态变更，走传输层自己的广播，不问 store 要事件。
+    // ponytail: executor 交来整条事件对象，这里按封装前的线上形状（整条对象当 type）
+    // 转发，保持无行为变化。代价是 agent_status 在渲染端一直不可见
+    // （ui/renderer.js 按 data.type === "agent_status" 判断）；修这个形状是行为变更，另开。
+    broadcastAgentEvent: (event) => broadcastToExtensions({ type: event }),
   });
 
   // Extension server
@@ -230,12 +235,7 @@ function handleExtensionMessage(ws, msg) {
       break;
     }
     case "getStats": {
-      const stats = {};
-      const rows = store._dbAll(
-        "SELECT matchedRule, COUNT(*) as count FROM records GROUP BY matchedRule",
-      );
-      for (const r of rows) stats[r.matchedRule] = r.count;
-      const total = store._dbGetScalar("SELECT COUNT(*) as count FROM records");
+      const { total, stats } = store.getRuleStats();
       ws.send(JSON.stringify({ type: "stats", total, stats, enabled: store.getEnabled() }));
       break;
     }
