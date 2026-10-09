@@ -175,8 +175,9 @@ function broadcastToExtensions(data) {
 }
 
 function startExtensionServer() {
-  extensionServer = new WebSocket.Server({ port: EXTENSION_PORT });
-  console.log(`[Server] Extension WebSocket server running on port ${EXTENSION_PORT}`);
+  // 只绑回环：这台机器之外的任何主机都不该能读到或抹掉浏览历史。
+  extensionServer = new WebSocket.Server({ port: EXTENSION_PORT, host: "127.0.0.1" });
+  console.log(`[Server] Extension WebSocket server running on 127.0.0.1:${EXTENSION_PORT}`);
 
   extensionServer.on("connection", (ws) => {
     console.log("[Server] Extension connected");

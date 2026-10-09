@@ -29,7 +29,7 @@
 
 系统采用 C/S 架构，Electron 应用作为唯一的真实数据源（Source of Truth）。
 
-* **Electron App**：运行 WebSocket 服务器（端口 `8766`），内置 SQLite (sql.js) 数据库。
+* **Electron App**：运行 WebSocket 服务器（`127.0.0.1:8766`，只绑回环），内置 SQLite (sql.js) 数据库。
 * **Chrome Extension**：基于 Plasmo 框架开发，支持 `WS 实时同步` 和 `本地离线缓存` 双模式。
 * **AI Engine**：支持集成 OpenAI、Anthropic (Claude) 以及本地部署的 Ollama。
 

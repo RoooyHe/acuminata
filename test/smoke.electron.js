@@ -4,6 +4,7 @@
 //   2. every invoke channel round-trips (a handler is actually registered)
 //   3. the renderer rendered real data read over IPC
 //   4. 扩展上报一条访问只走一次调用（WS → addRecord → RecordStore.recordVisit）
+//   5. WS 服务端只绑回环，同机器上的另一个地址连不上
 // Run with: npm run test:smoke
 
 const fs = require("fs");
@@ -227,6 +228,30 @@ async function reportVisitOverWs() {
   return { count: mine.length, workId: mine[0] ? mine[0].workId : null };
 }
 
+/**
+ * 服务端只许待在回环上：换一个地址、同一个端口，应当连不上。
+ * 127.0.0.2 是同机另一个回环地址——绑 0.0.0.0 时能连上、绑 127.0.0.1 时被拒，
+ * 所以它不需要网卡就能证明探针本身有效；局域网地址则是同一探针的端到端版本。
+ */
+async function probeBindWidth() {
+  const net = require("net");
+  const one = (host) =>
+    new Promise((resolve) => {
+      const socket = net.connect({ port: WS_PORT, host });
+      socket.on("connect", () => {
+        socket.destroy();
+        resolve({ host, code: "CONNECTED" });
+      });
+      socket.on("error", (err) => resolve({ host, code: err.code }));
+    });
+  const alias = await one("127.0.0.2");
+  const peers = Object.values(os.networkInterfaces())
+    .flat()
+    .filter((i) => i && i.family === "IPv4" && !i.internal)
+    .map((i) => i.address);
+  return { alias, connected: (await Promise.all(peers.map(one))).filter((p) => p.code === "CONNECTED") };
+}
+
 // Runs inside the renderer: the only place where window.electronAPI is real.
 function pageProbe(invokeRoutes) {
   return `(async () => {
@@ -432,6 +457,7 @@ async function main() {
     await sleep(50);
   }
   const visitIpcCalls = readIpcCounts();
+  const loopback = await probeBindWidth();
 
   const failures = [];
   const expect = (cond, msg) => {
@@ -578,6 +604,14 @@ async function main() {
   expect(
     visitProbe.statTotal !== "",
     "一条访问后统计没有更新：" + visitProbe.statTotal,
+  );
+  expect(
+    loopback.alias.code === "ECONNREFUSED",
+    "127.0.0.2:" + WS_PORT + " 未被拒（" + JSON.stringify(loopback.alias) + "）：探针在此平台无效，或服务端绑得比回环宽",
+  );
+  expect(
+    loopback.connected.length === 0,
+    "局域网地址也能连上 WS 服务端：" + JSON.stringify(loopback.connected),
   );
   expect(
     consoleErrors.length === 0,
