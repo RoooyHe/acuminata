@@ -193,23 +193,31 @@ function startExtensionServer() {
 // 见 docs/adr/0003 的后果条：用户自己写适配器，改版是常态，静默失效是头号故障。
 const adapterHealth = createAdapterHealth();
 
+// 未归属数 + 每站点适配器命中情况 + 歧义作品列表：健康度视图读它，一条访问的广播也带它。
+function healthSnapshot() {
+  return {
+    unattributedCount: store.getUnattributedCount(),
+    adapters: adapterHealth.snapshot(),
+    ambiguousWorks: store.getAmbiguousWorks(),
+  };
+}
+
 function handleExtensionMessage(ws, msg) {
   switch (msg.type) {
     case "addRecord": {
       // 一条访问走一条通道：闸门 → 身份键 → 同组同路径去重 → 当日计分 →
       // 作品归属 → 落库，全部在 store 内一次判完（docs/adr/0002）。
+      // store.recordVisit 自己发出那唯一一条 recordAdded/recordUpdated 广播
+      // （带访问 + 作品行 + 统计），这里只补适配器健康度。
       const result = store.recordVisit(msg);
       const dropped = result.action === "drop";
       adapterHealth.note(msg.domain, !dropped);
-      // 丢弃/去重都不产生 recordAdded 广播。健康度得自己推一次，
-      // 否则「连续丢弃且从未命中」的站点要等下一次无关更新才看得见。
-      if (dropped || result.action === "ignore") {
-        broadcastToExtensions({
-          type: "adapterHealthUpdated",
-          adapters: adapterHealth.snapshot(),
-        });
-        return;
-      }
+      // 命中与丢弃都各记一次，健康度独立于 recordAdded 广播推给界面。
+      broadcastToExtensions({
+        type: "adapterHealthUpdated",
+        health: healthSnapshot(),
+      });
+      if (dropped || result.action === "ignore") return;
 
       // 身份键指向多部作品：按 ADR-0002 那是「误合」风险，不静默合并，
       // 只报到日志等用户裁决（记录已经照常落库）。
@@ -219,11 +227,6 @@ function handleExtensionMessage(ws, msg) {
           JSON.stringify(result.keys),
         );
       }
-
-      broadcastToExtensions({
-        type: result.action === "update" ? "recordUpdated" : "recordAdded",
-        record: result.record,
-      });
       break;
     }
     case "getStats": {

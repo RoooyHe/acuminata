@@ -9,7 +9,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
 const { loadPreloadRoutes } = require("./preload-routes");
 
 const SEED_TITLE = "SMOKE 预置访问 α";
@@ -30,6 +30,26 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-smoke-"));
 const dbPath = path.join(tmpDir, "tracker.db");
 // Only explicit setting wins; this keeps main.js away from the user's real DB.
 process.env.ACUMINATA_DB_PATH = dbPath;
+
+// Count every renderer→main invoke. Wrapping ipcMain.handle before main.js loads
+// is what makes "one visit no longer triggers a full re-pull" assertable.
+const ipcCounts = {};
+const rawHandle = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, fn) =>
+  rawHandle(channel, (...args) => {
+    ipcCounts[channel] = (ipcCounts[channel] || 0) + 1;
+    return fn(...args);
+  });
+
+function resetIpcCounts() {
+  for (const key of Object.keys(ipcCounts)) delete ipcCounts[key];
+}
+
+function readIpcCounts() {
+  return Object.entries(ipcCounts)
+    .filter(([, n]) => n > 0)
+    .map(([channel, n]) => [channel, n]);
+}
 
 const routes = loadPreloadRoutes().routes;
 
@@ -353,8 +373,23 @@ async function main() {
     pageProbe(invokeRoutes),
   );
 
-  // 扩展所走的那条通路（真实 WS → main.js 的 addRecord → store.recordVisit）
+  // 扩展所走的那条通路（真实 WS → main.js 的 addRecord → store.recordVisit）。
+  // 探针自己 round-trip 过所有路由，先清零再数这次访问。
+  resetIpcCounts();
   const wsVisit = await reportVisitOverWs();
+  // 等渲染器把这次广播画完（新作品自己出现在列表里），再读计数：
+  // 计数为零不能是因为还没画，也不能靠一个拍脑袋的 sleep。
+  let visitProbe = null;
+  const visitDeadline = Date.now() + 5000;
+  while (Date.now() < visitDeadline) {
+    visitProbe = await win.webContents.executeJavaScript(`({
+      worksText: (document.getElementById('worksContainer') || {}).textContent || '',
+      statTotal: (document.getElementById('statTotal') || {}).textContent || '',
+    })`);
+    if (visitProbe.worksText.includes(SEED_WS_TITLE)) break;
+    await sleep(50);
+  }
+  const visitIpcCalls = readIpcCounts();
 
   const failures = [];
   const expect = (cond, msg) => {
@@ -478,6 +513,20 @@ async function main() {
   expect(
     !!wsVisit.workId,
     "WS 上报的那条访问没有归到作品（workId 为空）——一次调用要把作品归属一起做完",
+  );
+  // AC：一条新访问不再触发全量重拉（stats / works:page / health / unattributed /
+  // 打开中的详情）。广播已带够数据，这次访问不该产生任何渲染器→主进程的 invoke。
+  expect(
+    visitIpcCalls.length === 0,
+    "一条访问触发了 IPC 重拉: " + JSON.stringify(visitIpcCalls),
+  );
+  expect(
+    visitProbe.worksText.includes(SEED_WS_TITLE),
+    "新访问的作品没有就地出现在作品列表里：" + visitProbe.worksText,
+  );
+  expect(
+    visitProbe.statTotal !== "",
+    "一条访问后统计没有更新：" + visitProbe.statTotal,
   );
   expect(
     consoleErrors.length === 0,

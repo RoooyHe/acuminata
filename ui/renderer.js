@@ -210,6 +210,23 @@ function renderWorkSources() {
     .join("");
 }
 
+// 详情页头：分数、来源数、访问数，以及「打开最近一次」。数据变了就地重画。
+function renderWorkDetailHeader() {
+  if (!currentWork) return;
+  document.getElementById("workDetailTitle").textContent =
+    currentWork.work.title || "未命名作品";
+  document.getElementById("workDetailMeta").innerHTML =
+    `<span class="badge">${currentWork.work.score || 0} 分</span>` +
+    `<span>${currentWork.sources.length} 个来源</span>` +
+    `<span>${records.length} 次访问</span>`;
+  const latest = document.getElementById("btnOpenLatest");
+  const hasVisits = records.length > 0;
+  latest.style.display = hasVisits ? "" : "none";
+  latest.onclick = hasVisits
+    ? () => window.electronAPI.openUrl(records[0].url)
+    : null;
+}
+
 // 访问列表收进作品详情：打开一部作品，来源与全部访问都在这里。
 async function openWorkDetail(workId) {
   const detail = await window.electronAPI.getWorkDetail(workId);
@@ -224,18 +241,7 @@ async function openWorkDetail(workId) {
     const search = document.getElementById("searchInput");
     if (search) search.value = "";
   }
-  document.getElementById("workDetailTitle").textContent =
-    detail.work.title || "未命名作品";
-  document.getElementById("workDetailMeta").innerHTML =
-    `<span class="badge">${detail.work.score || 0} 分</span>` +
-    `<span>${detail.sources.length} 个来源</span>` +
-    `<span>${records.length} 次访问</span>`;
-  const latest = document.getElementById("btnOpenLatest");
-  const hasVisits = records.length > 0;
-  latest.style.display = hasVisits ? "" : "none";
-  latest.onclick = hasVisits
-    ? () => window.electronAPI.openUrl(records[0].url)
-    : null;
+  renderWorkDetailHeader();
   renderWorkSources();
   renderRecords();
   updateBatchDeleteBtn();
@@ -742,16 +748,72 @@ async function init() {
   document.getElementById("inputAiModel").value = aiCfg.model || "qwen2.5:7b";
 }
 
+// 一条访问的广播：统计、作品列表行、打开中的详情、未归类列表各自就地更新。
+// 广播已经带上需要的东西（stats / work / record），不再回头拉整页。
+function applyVisitUpdate(data) {
+  if (data.stats) {
+    stats = data.stats;
+    enabled = stats.enabled;
+    renderStats();
+    renderWatchlist();
+    renderWorksSiteBar();
+  }
+  if (data.work || data.previousWorkId) {
+    const hadRow = data.work && works.some((w) => w.id === data.work.id);
+    // 先把旧作品的行改掉或删掉（换归属时），再把新的并进来，最后只重画一次。
+    if (data.previousWorkId) {
+      const prev = works.findIndex((w) => w.id === data.previousWorkId);
+      if (prev !== -1) {
+        if (data.previousWork) works[prev] = data.previousWork;
+        else {
+          works = window.worksView.removeWorkRow(works, data.previousWorkId);
+          worksTotal = Math.max(0, worksTotal - 1);
+        }
+      }
+    }
+    if (data.work) {
+      works = window.worksView.mergeWorkRow(works, data.work, {
+        sort: worksSort,
+        site: worksSite,
+        watchlist,
+        limit: worksPage * worksPageSize,
+      });
+      if (!hadRow && works.some((w) => w.id === data.work.id)) worksTotal += 1;
+    }
+    renderWorks();
+  }
+
+  const rec = data.record;
+  if (!rec) return;
+  if (currentWork) {
+    const merged = window.worksView.mergeVisitInDetail(currentWork, rec);
+    if (merged.changed) {
+      currentWork = merged.detail;
+      if (data.work && data.work.id === currentWork.work.id) {
+        currentWork.work = { ...currentWork.work, score: data.work.score };
+      }
+      records = currentWork.visits;
+      renderWorkDetailHeader();
+      renderWorkSources();
+      renderRecords();
+      updateBatchDeleteBtn();
+    }
+  }
+  if (worksView === "unattributed") {
+    const merged = window.worksView.mergeUnattributedRow(
+      unattributed,
+      rec,
+      unattributedQuery,
+    );
+    unattributed = merged.records;
+    unattributedTotal = Math.max(0, unattributedTotal + merged.delta);
+    renderUnattributed();
+  }
+}
+
 window.electronAPI.onUpdate((data) => {
   if (data.type === "recordAdded" || data.type === "recordUpdated") {
-    // 简单起见，收到更新就刷新统计和第一页；打开中的作品详情也一并刷新
-    refreshStats().then(() => {
-      renderWorksSiteBar();
-    });
-    loadWorks(1);
-    loadHealth();
-    if (worksView === "unattributed") loadUnattributed(1);
-    if (currentWork) openWorkDetail(currentWork.work.id);
+    applyVisitUpdate(data);
   } else if (data.type === "recordsCleared") {
     // deleteRecords() 也会发这个事件（部分删除），所以不能一律清空：
     // 打开中的作品要重新读取，否则详情会留着旧表头与空列表。
@@ -766,9 +828,11 @@ window.electronAPI.onUpdate((data) => {
       renderRecords();
     }
   } else if (data.type === "adapterHealthUpdated") {
-    // 丢弃/去重不产生 recordAdded，健康度由主进程主动推。
-    if (health) health.adapters = data.adapters || [];
+    // 命中与丢弃都改健康度，由主进程每次访问后主动推一份快照。
+    if (data.health) health = data.health;
+    renderUnattributedGroup();
     renderAdapterHealth();
+    renderAmbiguousWorks();
   } else if (data.type === "worksBackfilledProgress") {
     setBackfillStatus(`回填中… ${data.processed} / ${data.before}`);
   } else if (data.type === "agentPendingUpdated") {

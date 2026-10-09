@@ -8,6 +8,11 @@ const {
   buildWorksView,
   buildWorkDetailView,
   siteLabel,
+  mergeWorkRow,
+  removeWorkRow,
+  deriveSources,
+  mergeVisitInDetail,
+  mergeUnattributedRow,
 } = require("../shared/works-view");
 
 function check(cond, msg) {
@@ -220,6 +225,149 @@ detail = buildWorkDetailView({
 });
 check(detail.visits.length === 2, "搜索只留下命中的访问行");
 
+// --- 增量合并：一条访问只动受影响的行 ---
+const rowOf = (id, score, lastVisitAt, sites) => ({
+  id,
+  title: id,
+  score,
+  sourceCount: (sites || []).length,
+  visitCount: 1,
+  sites: sites || [],
+  lastVisitAt,
+});
+
+// mergeWorkRow：已加载的行就地替换并重排，不在列表里的新作品才插入
+let merged = mergeWorkRow(
+  [rowOf("a", 1, 10, ["bilibili.com"]), rowOf("b", 5, 20, ["dmzj.com"])],
+  rowOf("a", 9, 30, ["bilibili.com"]),
+  { sort: "score", site: "all", watchlist: WATCHLIST },
+);
+check(
+  merged.map((w) => w.id).join(",") === "a,b" && merged[0].score === 9,
+  "已加载的作品行就地替换并按总分重排",
+);
+check(
+  merged.length === 2,
+  "原地更新不会多插一行",
+);
+merged = mergeWorkRow(
+  [rowOf("a", 1, 10, ["bilibili.com"])],
+  rowOf("new", 0, 40, ["dmzj.com"]),
+  { sort: "recent", site: "all", watchlist: WATCHLIST },
+);
+check(
+  merged.map((w) => w.id).join(",") === "new,a",
+  "新作品按最近访问排到前面",
+);
+merged = mergeWorkRow(
+  [rowOf("a", 1, 10, ["bilibili.com"])],
+  rowOf("other", 0, 40, ["dmzj.com"]),
+  { sort: "score", site: "B站", watchlist: WATCHLIST },
+);
+check(merged.length === 1, "新作品不属于当前站点筛选 → 不插入");
+merged = mergeWorkRow(
+  [rowOf("a", 9, 10, []), rowOf("b", 8, 20, []), rowOf("c", 7, 30, [])],
+  rowOf("d", 10, 40, []),
+  { sort: "score", site: "all", watchlist: WATCHLIST, limit: 3 },
+);
+check(
+  merged.map((w) => w.id).join(",") === "d,a,b",
+  "插入后按页大小截断",
+);
+check(
+  removeWorkRow([rowOf("a", 1, 1, []), rowOf("b", 2, 2, [])], "a")
+    .map((w) => w.id)
+    .join(",") === "b",
+  "旧作品无访问时从列表删除那一行",
+);
+
+// deriveSources：来源按 (站点, 版本) 分组，最近地址跟着最近访问
+const derived = deriveSources([
+  { matchedRule: "bilibili.com", edition: "中文字幕", timestamp: 300, url: "u3" },
+  { matchedRule: "bilibili.com", edition: "中文字幕", timestamp: 100, url: "u1" },
+  { matchedRule: "dmzj.com", edition: "中文字幕", timestamp: 200, url: "u2" },
+]);
+check(derived.length === 2, "同名版本在不同站点各占一行");
+check(
+  derived[0].matchedRule === "bilibili.com" && derived[0].visitCount === 2,
+  "同站同版本累加访问数",
+);
+check(derived[0].lastUrl === "u3" && derived[0].lastVisitAt === 300, "来源带最近地址与时间");
+
+// mergeVisitInDetail：新增 / 替换 / 移出
+const openDetail = {
+  work: { id: "w1", title: "作品", score: 3 },
+  visits: [{ id: "v1", matchedRule: "bilibili.com", timestamp: 100, url: "u1" }],
+  sources: [{ matchedRule: "bilibili.com", visitCount: 1, lastVisitAt: 100, lastUrl: "u1" }],
+};
+merged = mergeVisitInDetail(openDetail, {
+  id: "v2",
+  workId: "w1",
+  matchedRule: "dmzj.com",
+  timestamp: 200,
+  url: "u2",
+});
+check(
+  merged.changed && merged.detail.visits.length === 2 &&
+    merged.detail.visits[0].id === "v2",
+  "新访问插进详情并排到最前",
+);
+check(merged.detail.sources.length === 2, "详情来源行随之新增一行");
+merged = mergeVisitInDetail(openDetail, {
+  id: "v1",
+  workId: "w1",
+  matchedRule: "bilibili.com",
+  timestamp: 500,
+  url: "u1b",
+});
+check(
+  merged.changed && merged.detail.visits.length === 1 &&
+    merged.detail.visits[0].url === "u1b",
+  "同一条访问回访时就地替换，不新增行",
+);
+merged = mergeVisitInDetail(openDetail, {
+  id: "v1",
+  workId: "w9",
+  matchedRule: "bilibili.com",
+  timestamp: 500,
+  url: "u1b",
+});
+check(
+  merged.changed && merged.detail.visits.length === 0 &&
+    merged.detail.sources.length === 0,
+  "访问改归到别的作品 → 从当前详情移出",
+);
+merged = mergeVisitInDetail(openDetail, { id: "vX", workId: "w9", timestamp: 1 });
+check(merged.changed === false, "与当前作品无关的访问不动详情");
+
+// mergeUnattributedRow：插入 / 替换 / 移出 / 搜索过滤
+let unatt = mergeUnattributedRow([], { id: "r1", workId: null, title: "未归类" }, "");
+check(unatt.delta === 1 && unatt.records.length === 1, "未归属访问插进未归类列表");
+unatt = mergeUnattributedRow(
+  [{ id: "r1", workId: null, title: "旧" }],
+  { id: "r1", workId: null, title: "新" },
+  "",
+);
+check(unatt.delta === 0 && unatt.records[0].title === "新", "同一访问就地替换，总数不变");
+unatt = mergeUnattributedRow(
+  [{ id: "r1", workId: null, title: "未归类" }],
+  { id: "r1", workId: "w1", title: "已归属" },
+  "",
+);
+check(unatt.delta === -1 && unatt.records.length === 0, "已归属的访问从未归类列表移出");
+unatt = mergeUnattributedRow(
+  [{ id: "r1", workId: null, title: "未归类" }],
+  { id: "r1", workId: "w1", title: "未归类" },
+  "未归类",
+);
+check(unatt.records.length === 0, "搜索状态下移出的行同样去掉");
+unatt = mergeUnattributedRow(
+  [],
+  { id: "r2", workId: null, title: "不匹配" },
+  "别的词",
+);
+check(unatt.delta === 0 && unatt.records.length === 0, "搜索不命中的未归属访问不插入");
+
 // --- 浏览器分支：<script> 加载时挂到 window 上 ---
 const sandbox = {};
 vm.createContext(sandbox);
@@ -257,6 +405,13 @@ check(
   browserDetail.sources.length === 3 &&
     browserDetail.sources[2].label === "动漫之家",
   "浏览器分支能算出同样的来源行",
+);
+
+check(
+  typeof sandbox.worksView.mergeWorkRow === "function" &&
+    typeof sandbox.worksView.mergeVisitInDetail === "function" &&
+    typeof sandbox.worksView.removeWorkRow === "function",
+  "增量合并函数在浏览器分支同样可用",
 );
 
 console.log("\nworks-view tests passed");

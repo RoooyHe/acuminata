@@ -134,5 +134,150 @@
     return s % 60 ? `${m}分${s % 60}秒` : `${m}分`;
   }
 
-  return { buildWorksView, buildWorkDetailView, siteLabel };
+  /**
+   * 一条访问落库后，就地更新作品列表里那一行。
+   * 已加载的行直接替成新汇总并重排；不在列表里的新作品按当前筛选插入。
+   * 列表本身不重拉（那是整页刷新），只动受影响的一行。
+   * @param {Array<Object>} works 已加载的作品行
+   * @param {Object} work getWorkRow 的汇总行
+   * @param {{sort?:string, site?:string, watchlist?:Array<Object>, limit?:number}} [options]
+   * @returns {Array<Object>} 新数组
+   */
+  function mergeWorkRow(works, work, options) {
+    const opts = options || {};
+    const list = (works || []).slice();
+    const idx = list.findIndex((w) => w.id === work.id);
+    if (idx === -1) {
+      const site = opts.site;
+      const matchesSite =
+        !site ||
+        site === "all" ||
+        (work.sites || []).some(
+          (rule) => siteLabel(rule, opts.watchlist) === site,
+        );
+      if (!matchesSite) return list;
+      list.push(work);
+    } else {
+      list[idx] = work;
+    }
+    // 与 getWorksPage 的排序一致：score 为 (score DESC, lastVisitAt DESC)，recent 反之。
+    const recent = opts.sort === "recent";
+    list.sort((a, b) => {
+      const av = recent ? a.lastVisitAt || 0 : a.score || 0;
+      const bv = recent ? b.lastVisitAt || 0 : b.score || 0;
+      if (av !== bv) return bv - av;
+      const at = recent ? a.score || 0 : a.lastVisitAt || 0;
+      const bt = recent ? b.score || 0 : b.lastVisitAt || 0;
+      return bt - at;
+    });
+    return typeof opts.limit === "number" && opts.limit > 0
+      ? list.slice(0, opts.limit)
+      : list;
+  }
+
+  /**
+   * 从已加载的作品行里去掉一条（那条访问换归属后旧作品无访问被清掉）。
+   * @param {Array<Object>} works
+   * @param {string} id
+   * @returns {Array<Object>} 新数组
+   */
+  function removeWorkRow(works, id) {
+    return (works || []).filter((w) => w.id !== id);
+  }
+
+  /**
+   * 从访问列表推导来源行（站点 + 版本），与 store 的聚合同形。
+   * 一条新访问只改一条来源行（或新增一行），不需要回头查库。
+   * @param {Array<Object>} visits
+   * @returns {Array<Object>}
+   */
+  function deriveSources(visits) {
+    const byKey = new Map();
+    for (const v of visits || []) {
+      const key = (v.matchedRule || "") + "\u0000" + (v.edition || "");
+      let s = byKey.get(key);
+      if (!s) {
+        s = {
+          matchedRule: v.matchedRule,
+          edition: v.edition || "",
+          visitCount: 0,
+          lastVisitAt: 0,
+          lastUrl: "",
+        };
+        byKey.set(key, s);
+      }
+      s.visitCount++;
+      if ((v.timestamp || 0) >= s.lastVisitAt) {
+        s.lastVisitAt = v.timestamp || 0;
+        s.lastUrl = v.url || "";
+      }
+    }
+    return Array.from(byKey.values()).sort(
+      (a, b) => b.lastVisitAt - a.lastVisitAt,
+    );
+  }
+
+  /**
+   * 把一条访问合并进打开中的作品详情：只动受影响的那一行（新增/替换/移出），
+   * 来源行随访问列表重算。作品不受影响时原样返回。
+   * @param {{work:Object, visits:Array<Object>, sources:Array<Object>}} detail
+   * @param {Object} record
+   * @returns {{detail:Object, changed:boolean}}
+   */
+  function mergeVisitInDetail(detail, record) {
+    const visits = (detail.visits || []).slice();
+    const idx = visits.findIndex((v) => v.id === record.id);
+    if (record.workId !== detail.work.id) {
+      // 这条访问从这部作品上移走了：删掉它，其余不动。
+      if (idx === -1) return { detail, changed: false };
+      visits.splice(idx, 1);
+    } else {
+      if (idx === -1) visits.push(record);
+      else visits[idx] = record;
+      visits.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    }
+    return {
+      detail: { ...detail, visits, sources: deriveSources(visits) },
+      changed: true,
+    };
+  }
+
+  /**
+   * 把一条访问合并进「未归类」列表（workId 为空才属于它）。
+   * delta 告诉调用方总数该加减多少（插入为 +1，移出为 -1）。
+   * @param {Array<Object>} records
+   * @param {Object} record
+   * @param {string} [query]
+   * @returns {{records:Array<Object>, delta:number}}
+   */
+  function mergeUnattributedRow(records, record, query) {
+    const list = (records || []).slice();
+    const idx = list.findIndex((r) => r.id === record.id);
+    const belongs =
+      record.workId == null && (!query || shared.matchesSearch(record, query));
+    if (belongs) {
+      if (idx === -1) {
+        list.unshift(record);
+        return { records: list, delta: 1 };
+      }
+      list[idx] = record;
+      return { records: list, delta: 0 };
+    }
+    if (idx !== -1) {
+      list.splice(idx, 1);
+      return { records: list, delta: -1 };
+    }
+    return { records: list, delta: 0 };
+  }
+
+  return {
+    buildWorksView,
+    buildWorkDetailView,
+    siteLabel,
+    mergeWorkRow,
+    removeWorkRow,
+    deriveSources,
+    mergeVisitInDetail,
+    mergeUnattributedRow,
+  };
 });
