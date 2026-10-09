@@ -26,13 +26,14 @@ async function run() {
     "重复新增返回 false",
   );
   const lastAdd = events.at(-1);
-  assert.ok(Array.isArray(lastAdd.payload), "每次站点变更广播整份 watchlist（数组）");
+  assert.strictEqual(lastAdd.type, "watchlistUpdated", "站点变更广播 watchlistUpdated");
+  assert.ok(Array.isArray(lastAdd.payload.watchlist), "每次站点变更广播 { watchlist } 数组");
 
   sites.updateWatchlistRegex("example.com", "/video/", "url");
   const updated = sites.getWatchlist().find((w) => w.domain === "example.com");
   assert.strictEqual(updated.regexFilter, "/video/", "正则规则落库");
   assert.strictEqual(updated.regexTarget, "url", "正则目标落库");
-  assert.ok(!Array.isArray(events.at(-1).payload), "正则变更广播的是 { watchlist }");
+  assert.ok(Array.isArray(events.at(-1).payload.watchlist), "正则变更广播的是 { watchlist }");
   assert.strictEqual(sites.updateWatchlistRegex("nope.com", "x", "url"), null, "未知域名返回 null");
 
   // 镜像：同 label 的两个域名是一组

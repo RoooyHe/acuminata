@@ -38,7 +38,7 @@ class SettingsStore {
 
   setEnabled(val) {
     put(this.db, "enabled", val);
-    this.emit("enabledUpdated", val);
+    this.emit("enabledUpdated", { enabled: !!val });
   }
 
   // ── Locale ────────────────────────────────────────────────────────────────

@@ -12,7 +12,11 @@ async function run() {
   assert.strictEqual(settings.getEnabled(), true, "默认开启");
   settings.setEnabled(false);
   assert.strictEqual(settings.getEnabled(), false, "关闭后读回 false");
-  assert.deepStrictEqual(events, [{ type: "enabledUpdated", payload: false }], "改开关广播一次");
+  assert.deepStrictEqual(
+    events,
+    [{ type: "enabledUpdated", payload: { enabled: false } }],
+    "改开关广播一次，带具名 enabled",
+  );
 
   assert.strictEqual(settings.getLocale().code, "zh-CN", "默认语言 zh-CN");
   settings.setLocale("en-US");

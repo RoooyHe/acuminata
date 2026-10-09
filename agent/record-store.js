@@ -24,6 +24,7 @@ const { AgentMemoryStore } = require("./store/agent-memory");
 const { RecommendationStore } = require("./store/recommendations");
 const { rank, buildProfile } = require("./rank");
 const { loadAdapters } = require("./adapters");
+const { createAdapterHealth } = require("./adapter-health");
 
 class RecordStore {
   /**
@@ -38,6 +39,8 @@ class RecordStore {
     this.db = null;
     // 适配器只在启动时读一次：写入路径用它，推给扩展去页面采集的也是同一份。
     this._adapters = options.adapters || loadAdapters(options.adapterDirs);
+    // 健康度的计数器由访问写入路径维护，随那唯一一条访问广播一起推给客户端。
+    this._adapterHealth = createAdapterHealth(this._adapters);
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -55,6 +58,7 @@ class RecordStore {
       works: this._works,
       settings: this._settings,
       adapters: this._adapters,
+      adapterHealth: this._adapterHealth,
     });
     this._agent = new AgentMemoryStore(this.db, emit);
     this._candidates = new CandidateStore(this.db, { emit });
@@ -147,6 +151,7 @@ class RecordStore {
   recordVisit(incoming) { return this._visits.recordVisit(incoming); }
   getUnattributedPage(page, pageSize, search) { return this._visits.getUnattributedPage(page, pageSize, search); }
   getUnattributedCount() { return this._visits.getUnattributedCount(); }
+  getHealthSnapshot() { return this._visits.getHealth(); }
   extractHighValueRecords() { return this._visits.extractHighValueRecords(); }
   buildDeleteReflectionPrompt(records) { return this._visits.buildDeleteReflectionPrompt(records); }
   buildRejectReflectionPrompt(rec) { return this._visits.buildRejectReflectionPrompt(rec); }

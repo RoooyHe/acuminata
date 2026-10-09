@@ -49,7 +49,7 @@ class SiteStore {
     const exists = this.db.get("SELECT domain FROM watchlist WHERE domain = ?", [entry.domain]);
     if (exists) return false;
     this._insertEntry(entry);
-    this.emit("watchlistUpdated", this.getWatchlist());
+    this.emit("watchlistUpdated", { watchlist: this.getWatchlist() });
     return true;
   }
 
@@ -57,14 +57,14 @@ class SiteStore {
     const exists = this.db.get("SELECT domain FROM watchlist WHERE domain = ?", [domain]);
     if (!exists) return false;
     this.db.run("DELETE FROM watchlist WHERE domain = ?", [domain]);
-    this.emit("watchlistUpdated", this.getWatchlist());
+    this.emit("watchlistUpdated", { watchlist: this.getWatchlist() });
     return true;
   }
 
   updateWatchlist(entries) {
     this.db.run("DELETE FROM watchlist");
     for (const entry of entries) this._insertEntry(entry);
-    this.emit("watchlistUpdated", this.getWatchlist());
+    this.emit("watchlistUpdated", { watchlist: this.getWatchlist() });
   }
 
   /** Update one watchlist domain's regex rule. Returns the row, or null if unknown. */

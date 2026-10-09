@@ -375,7 +375,11 @@ function renderAdapterHealth() {
 }
 
 async function loadHealth() {
-  health = await window.electronAPI.getWorkHealth();
+  applyHealth(await window.electronAPI.getWorkHealth());
+}
+
+function applyHealth(next) {
+  if (next) health = next;
   renderUnattributedGroup();
   renderAdapterHealth();
   renderAmbiguousWorks();
@@ -828,6 +832,8 @@ function applyVisitUpdate(data) {
 
 window.electronAPI.onUpdate((data) => {
   if (data.type === "recordAdded" || data.type === "recordUpdated") {
+    // 命中的访问把健康度随 record 广播一起带来（一条访问一条广播）。
+    applyHealth(data.health);
     applyVisitUpdate(data);
   } else if (data.type === "recordsCleared") {
     // deleteRecords() 也会发这个事件（部分删除），所以不能一律清空：
@@ -843,11 +849,8 @@ window.electronAPI.onUpdate((data) => {
       renderRecords();
     }
   } else if (data.type === "adapterHealthUpdated") {
-    // 命中与丢弃都改健康度，由主进程每次访问后主动推一份快照。
-    if (data.health) health = data.health;
-    renderUnattributedGroup();
-    renderAdapterHealth();
-    renderAmbiguousWorks();
+    // 丢弃/去重没有 record 广播，主进程单独推一份健康度快照。
+    applyHealth(data.health);
   } else if (data.type === "worksBackfilledProgress") {
     setBackfillStatus(`${worksJobLabel(data.op)}中… ${data.processed} / ${data.before}`);
   } else if (data.type === "candidatesUpdated") {
