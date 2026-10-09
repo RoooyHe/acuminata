@@ -155,7 +155,7 @@
 
 `selector` 写空串 `""` 表示**条目元素自己**（常用于取条目链接的 `href`）。
 
-**条目抽完之后，顶层的 `parse` 原样再跑一遍。** 所以 `parse.code.from: ["title", "url"]` 对作品页和列表条目是同一段代码——一个适配器，三处复用（解析访问、抽取候选、采集字段）。
+**条目抽完之后，顶层的 `parse` 原样再跑一遍。** 所以 `parse.code.from: ["title", "url"]` 对作品页和列表条目是同一段代码——一个适配器，三处复用（解析访问、抽取候选、采集字段）。候选落库时只存**原始字段**（`candidates.fields`），`parse` 在排序时拿它重算（#31）——和「重跑」同一个前提：parse 是已存字段的纯函数。
 
 条目里声明的 `url` / `title` 会覆盖内置的同名字段。这是故意的：条目自己的地址和标题才是要解析的东西。
 
@@ -209,7 +209,7 @@
 
 | 已读 | 未读（写了但没人读，别用） |
 |---|---|
-| `detect.pageGlobal`、`collect`（含 `many`、选择器/属性有序备选）、`parse`（`from` / 命名捕获组）、`mirrors` | `domains`、`{label:"主演"}` 与 `attr:"a@text"`（按标签文本定位）、`list` 列表页 |
+| `detect.pageGlobal`、`collect`（含 `many`、选择器/属性有序备选）、`parse`（`from` / 命名捕获组）、`mirrors`、`list` 列表页（`item` / `collect` / `url` / `pageUrl`） | `domains`、`{label:"主演"}` 与 `attr:"a@text"`（按标签文本定位） |
 
 `loadAdapters()` 能读一个或多个目录（内置 + 用户，后一个覆盖前一个的同名文件，没有特权路径），
 `RecordStore` 启动时读一次，交给两处：
@@ -222,8 +222,12 @@ detect 与 collect 要 DOM，所以住在 `shared/page-collect.js`：扩展用
 跑真实页面夹具。**认平台由桌面端决定**（`detectBySignature`）——扩展只回传页面签名
 （`pageSignature`）与各适配器 collect 抽到的字段（`pageFields`），判定只有一处。
 
-仍未接上：`list` 列表页（候选）是 #30。
 用户适配器已接上：`main.js` 启动时把用户数据目录的 `adapters/` 追加进加载目录（#28）；
 适配器健康度按**适配器**记（不是站点）——一个适配器连续多次没解析出**身份字段**，
 或平台签名被改掉后 `detect` 落空，连续丢弃达到阈值就标为**疑似失效**，不静默（ADR-0003、0006）。
 采集字段落库（`records.pageSignature` / `records.pageFields`）与「重新解析历史」是 #27。
+`list` 列表页由 #30 接上：`collectListEntries`（本页采集同一个函数）在隐藏
+`BrowserWindow` 里跑，条目落进 `candidates` 表（`agent/store/candidates.js`），
+存的是**原始字段**；与 `recommendations` 分表；列表页本身在写入路径上被丢弃
+（`isListPageUrl`），不记录为访问、也不产生作品身份。排序把候选变成推荐是 #31。
+页面级 `collect` 与列表条目 `collect` 的规则完全一样，只是作用域不同。

@@ -39,6 +39,11 @@ const ROUTES = [
   // AI
   { name: "getAiConfig", channel: "ai:config:get", invoke: true },
   { name: "setAiConfig", channel: "ai:config:set", invoke: true },
+  // Candidates
+  { name: "getCandidates", channel: "candidates:list", invoke: true },
+  { name: "fetchCandidates", channel: "candidates:fetch", invoke: true },
+  { name: "removeCandidate", channel: "candidates:remove", invoke: true },
+  { name: "clearCandidates", channel: "candidates:clear", invoke: true },
   // Recommendations
   { name: "getRecommendations", channel: "recommendations:list", invoke: true },
   { name: "rejectRecommendation", channel: "recommendations:reject", invoke: true },

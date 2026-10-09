@@ -18,12 +18,12 @@
  * 内置适配器与用户适配器走的就是这条管道：内置的也是 `adapters/` 下的一个 JSON
  * 文件，由同一个 loader 读进来，没有特权路径（ADR-0006）。
  *
- * ponytail: 模板里的 `{label:"主演"}` / `attr:"a@text"`（按标签文本定位）与
- * `list` 列表页尚未实现——内置 MacCMS 适配器用不到它们，`list` 归后续的候选（#30）。
+ * ponytail: 模板里的 `{label:"主演"}` / `attr:"a@text"`（按标签文本定位）尚未实现——
+ * 内置 MacCMS 适配器用不到它们。`list` 列表页见下面的 `isListPageUrl` / `listFetchTargets`。
  */
 
 const { extractKeys } = require("./identity");
-const { collectPage, detectBySignature } = require("../shared/page-collect");
+const { collectPage, detectBySignature, collectListEntries } = require("../shared/page-collect");
 
 /** 从 meta / link 这类标签取属性。没有 root（桌面端回传的访问里就只有字段）时为空。 */
 function metaOf(root, selector, attr = "content") {
@@ -97,6 +97,92 @@ function identityForFields(adapter, builtin, pageFields) {
   return { fields, parsed, extracted: { ...fields, ...parsed } };
 }
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 列表页路径模板 → 匹配 pathname 的正则。忽略域名与查询串，镜像同样命中。
+ * 只看路径：带跟踪参数的同一个列表页也要认得出。
+ */
+function listPathRegex(raw) {
+  // 先去掉协议与主机，再切 `{page}`：`new URL` 会把 `{` `}` 百分号编码掉。
+  const path = String(raw)
+    .replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "")
+    .split("?")[0];
+  const parts = path.split("{page}").map(escapeRegExp);
+  try {
+    return new RegExp("^" + parts.join("\\d+") + "$");
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 这个地址是不是某个适配器声明的列表页。
+ *
+ * 列表页有三个角色（ADR-0005）：不记录为访问、要被抓取、本身没有作品身份。
+ * 判定看适配器的 `list` 声明——不看用户的 `regexFilter`，那是过滤器，不是解析器。
+ * 按路径匹配而非域名，所以镜像上的同一个列表页也认得出。
+ *
+ * @param {Array<Object>} adapters
+ * @param {string} url
+ */
+function isListPageUrl(adapters, url) {
+  let path;
+  try {
+    path = new URL(url).pathname;
+  } catch (e) {
+    return false;
+  }
+  for (const adapter of adapters || []) {
+    for (const list of adapter.list || []) {
+      for (const raw of [list && list.url, list && list.pageUrl]) {
+        const re = raw && listPathRegex(raw);
+        if (re && re.test(path)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * 该抓哪些列表页：用户**登记过**的站点里，适配器声明了列表页的那些。
+ *
+ * 抓取只在用户点击时触发（ADR-0005），所以这里只回答「点了以后去哪几个地址」；
+ * 不登记不抓（CONTEXT.md「站点」：只有显式登记过的站点才纳入），也不翻分页。
+ *
+ * @returns {Array<{adapterFile, listName, domain, matchedRule, groupLabel, url, list}>}
+ */
+function listFetchTargets(adapters, watchlist) {
+  const targets = [];
+  for (const adapter of adapters || []) {
+    for (const list of adapter.list || []) {
+      if (!list || !list.url) continue;
+      let host;
+      try {
+        host = new URL(list.url).hostname;
+      } catch (e) {
+        continue;
+      }
+      const site = (watchlist || []).find(
+        (w) => host === w.domain || host.endsWith("." + w.domain),
+      );
+      if (!site) continue;
+      targets.push({
+        adapterFile: adapter.file,
+        listName: list.name || "",
+        domain: host,
+        matchedRule: site.domain,
+        groupLabel: site.label || site.domain,
+        url: list.url,
+        list,
+      });
+    }
+  }
+  return targets;
+}
+
 /**
  * 一页跑完 detect → collect → parse，产出**字段**与**作品身份键**。
  * 认不出平台返回 null（调用方保持今天的行为）；认出来了就一定有 `keys`，
@@ -128,4 +214,7 @@ module.exports = {
   identityForFields,
   parseFields,
   identityForPage,
+  collectListEntries,
+  isListPageUrl,
+  listFetchTargets,
 };

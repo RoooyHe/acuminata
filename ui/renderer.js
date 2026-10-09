@@ -752,6 +752,7 @@ async function init() {
   renderWatchlist();
   renderWorksSiteBar();
   loadWorks(1);
+  loadCandidates();
   setWsStatus(true);
 
   const aiCfg = await window.electronAPI.getAiConfig();
@@ -849,6 +850,8 @@ window.electronAPI.onUpdate((data) => {
     renderAmbiguousWorks();
   } else if (data.type === "worksBackfilledProgress") {
     setBackfillStatus(`${worksJobLabel(data.op)}中… ${data.processed} / ${data.before}`);
+  } else if (data.type === "candidatesUpdated") {
+    loadCandidates();
   } else if (data.type === "agentPendingUpdated") {
     loadPendingActions();
   }
@@ -982,6 +985,110 @@ async function loadRecommendations() {
       '<div style="padding:40px; text-align:center; color:var(--muted-fg)">加载推荐失败</div>';
   }
 }
+
+// ── 候选池 ──────────────────────────────────────────────────────────────────
+// 候选与推荐分开：候选是抓来还没排的原始条目（ADR-0005），推荐是排完序带理由的。
+
+/** @type {Array<Object>} */
+let candidates = [];
+
+async function loadCandidates() {
+  const container = document.getElementById("candidatesContainer");
+  try {
+    candidates = await window.electronAPI.getCandidates();
+  } catch (e) {
+    container.innerHTML =
+      '<div style="padding:40px; text-align:center; color:var(--muted-fg)">加载候选失败</div>';
+    return;
+  }
+  if (candidates.length === 0) {
+    container.innerHTML =
+      '<div style="padding:40px; text-align:center; color:var(--muted-fg)">暂无候选。点「抓取候选」从已登记站点的列表页抓一批。</div>';
+    return;
+  }
+  container.innerHTML = candidates
+    .map((c) => {
+      let cover = "";
+      try {
+        cover = (JSON.parse(c.fields) || {}).cover || "";
+      } catch (e) {
+        cover = "";
+      }
+      return `
+      <div class="data-item" id="cand-${c.id}">
+        ${
+          cover
+            ? `<img src="${escapeHtml(cover)}" loading="lazy" style="width:56px;height:80px;object-fit:cover;border-radius:4px;flex:0 0 auto;">`
+            : ""
+        }
+        <div class="item-body">
+          <div class="item-title">${escapeHtml(c.title || c.url)}</div>
+          <div class="item-meta">
+            <span class="badge" style="background:transparent; color:var(--muted-fg); border-color:var(--border);">${escapeHtml(c.groupLabel || c.domain)}</span>
+            <span class="item-url">${escapeHtml(c.listName ? c.listName + " · " : "")}${escapeHtml(c.domain)}</span>
+          </div>
+        </div>
+        <div class="item-actions">
+          <button class="btn-pin-text" data-action="candidate-open" data-url="${escapeHtml(c.url)}">打开</button>
+          <button class="btn-pin-text" style="color: var(--muted-fg)" data-action="candidate-remove" data-id="${c.id}">移除</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+document.getElementById("btnCandidatesFetch").onclick = async function () {
+  const btn = this;
+  btn.disabled = true;
+  btn.textContent = "抓取中…";
+  try {
+    const res = await window.electronAPI.fetchCandidates();
+    if (res.failures && res.failures.length) {
+      // 抓取失败必须可见，不能静默（ADR-0005）。
+      showToast(`抓取失败：${res.failures[0].url} — ${res.failures[0].error}`, "error");
+    } else {
+      showToast(`新增 ${res.inserted} 条，更新 ${res.updated} 条`);
+    }
+    await loadCandidates();
+  } catch (e) {
+    showToast(String(e), "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "抓取候选";
+  }
+};
+
+document.getElementById("btnCandidatesClear").onclick = async function () {
+  if (!confirm("清空所有候选？")) return;
+  await window.electronAPI.clearCandidates();
+  await loadCandidates();
+  showToast("候选已清空");
+};
+
+document.getElementById("candidatesContainer").addEventListener(
+  "error",
+  (e) => {
+    // 封面图挂了就隐藏，不留一个破图图标（不用内联 handler）。
+    if (e.target && e.target.tagName === "IMG") e.target.style.display = "none";
+  },
+  true,
+);
+
+document.getElementById("candidatesContainer").onclick = async function (e) {
+  const removeBtn = e.target.closest("[data-action='candidate-remove']");
+  if (removeBtn) {
+    e.stopPropagation();
+    await window.electronAPI.removeCandidate(removeBtn.dataset.id);
+    const item = document.getElementById("cand-" + removeBtn.dataset.id);
+    if (item) item.remove();
+    return;
+  }
+  const openBtn = e.target.closest("[data-action='candidate-open']");
+  if (openBtn) {
+    e.stopPropagation();
+    window.electronAPI.openUrl(openBtn.dataset.url);
+  }
+};
 
 async function loadPendingActions() {
   const btn = document.getElementById("btnAgentPending");

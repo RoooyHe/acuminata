@@ -6,6 +6,7 @@
 //   sites           站点（watchlist / 正则规则；镜像由适配器声明）
 //   works           作品（身份键、跨站融合、计分、回填）
 //   visits          访问（记录、统计、写入路径 recordVisit）
+//   candidates      候选（列表页抓来还没排的条目）
 //   agent           agent 对话 / 记忆 / 待审批动作 / 画像
 //   recommendations 推荐
 //
@@ -18,6 +19,7 @@ const { SettingsStore } = require("./store/settings");
 const { SiteStore } = require("./store/sites");
 const { WorkStore } = require("./store/works");
 const { VisitStore } = require("./store/visits");
+const { CandidateStore } = require("./store/candidates");
 const { AgentMemoryStore } = require("./store/agent-memory");
 const { RecommendationStore } = require("./store/recommendations");
 const { loadAdapters } = require("./adapters");
@@ -54,6 +56,7 @@ class RecordStore {
       adapters: this._adapters,
     });
     this._agent = new AgentMemoryStore(this.db, emit);
+    this._candidates = new CandidateStore(this.db, { emit });
     this._recommendations = new RecommendationStore(this.db, { emit, visits: this._visits });
 
     for (const module of [
@@ -61,6 +64,7 @@ class RecordStore {
       SiteStore,
       WorkStore,
       VisitStore,
+      CandidateStore,
       AgentMemoryStore,
       RecommendationStore,
     ]) {
@@ -145,6 +149,13 @@ class RecordStore {
   extractHighValueRecords() { return this._visits.extractHighValueRecords(); }
   buildDeleteReflectionPrompt(records) { return this._visits.buildDeleteReflectionPrompt(records); }
   buildRejectReflectionPrompt(rec) { return this._visits.buildRejectReflectionPrompt(rec); }
+
+  // ── Candidates ─────────────────────────────────────────────────────────────
+
+  getCandidates(limit) { return this._candidates.getCandidates(limit); }
+  importCandidates(payload) { return this._candidates.importCandidates(payload); }
+  removeCandidate(id) { return this._candidates.removeCandidate(id); }
+  clearCandidates() { return this._candidates.clearCandidates(); }
 
   // ── Recommendations ────────────────────────────────────────────────────────
 

@@ -10,7 +10,7 @@ const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
 const CALLERS = ["main.js", "agent/ipc-dispatcher.js"];
-const PRIVATE = /\bstore\.(?:db|broadcast)\b|\._(?:dbAll|dbGet|dbGetScalar|dbRun|emit|migrate|seedDefaults|markDirty|onDirty|watchers|sweepOrphanWorks|findVisitByPath|siteRules)\b|\bstore\._(?:settings|sites|works|visits|agent|recommendations)\b/;
+const PRIVATE = /\bstore\.(?:db|broadcast)\b|\._(?:dbAll|dbGet|dbGetScalar|dbRun|emit|migrate|seedDefaults|markDirty|onDirty|watchers|sweepOrphanWorks|findVisitByPath|siteRules)\b|\bstore\._(?:settings|sites|works|visits|candidates|agent|recommendations)\b/;
 
 for (const file of CALLERS) {
   const text = fs.readFileSync(path.join(ROOT, file), "utf8");

@@ -1,8 +1,8 @@
 // Visits domain: `records` is a visit event (CONTEXT.md: 访问). This module owns
-// the whole write path — 闸门 → 身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库 —
-// in one call, `recordVisit`, so the order stays testable (docs/adr/0002/0003).
-// It reads sites (watchlist/rules) and works (attribution) as collaborators.
-// Testable with records + watchlist + works tables.
+// the whole write path — 列表页丢弃 → 闸门 → 身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库 —
+// in one call, `recordVisit`, so the order stays testable (docs/adr/0002/0003/0005).
+// It reads sites (watchlist/rules), works (attribution) and the adapters (list pages) as
+// collaborators. Testable with records + watchlist + works tables.
 
 const {
   isRepeatVisit,
@@ -17,6 +17,7 @@ const {
   buildDeleteReflectionPrompt: buildDeletePrompt,
   buildRejectReflectionPrompt: buildRejectPrompt,
 } = require("../prompts");
+const { isListPageUrl } = require("../adapter");
 const { uuid, now } = require("./ids");
 const { toJson } = require("./json-column");
 
@@ -378,7 +379,7 @@ class VisitStore {
   /**
    * 一条来访的访问，从「这一页算不算作品」到「它属于哪部作品」，一次判完：
    *
-   *   闸门 → 作品身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库
+   *   列表页 → 闸门 → 作品身份键 → 同组同路径去重 → 当日计分 → 作品归属 → 落库
    *
    * 这是访问写入路径的**唯一入口**（docs/adr/0002：判定在写入时做出并落库，只做一次）。
    * 链路上有两层意义不同的去重与计分，都在这一个方法里：
@@ -414,14 +415,20 @@ class VisitStore {
       this.adapters,
     );
 
-    // 2. 闸门 + 解析：同一个正则既决定「这一页算不算作品页」，也抠出作品身份
+    // 2. 列表页：适配器声明过的列表页不产生访问、也不产生作品身份（ADR-0005）。
+    // 判定看适配器的 `list` 声明，不看用户的 regexFilter——那是过滤器，位置是错的。
+    if (isListPageUrl(this.adapters, incoming.url)) {
+      return { action: "drop", reason: "list-page" };
+    }
+
+    // 3. 闸门 + 解析：同一个正则既决定「这一页算不算作品页」，也抠出作品身份
     if (group.rules.length > 0 && !matchesRegex(group.rules, incoming.title, incoming.url)) {
       // 这一页不是作品页，丢弃是有意的。但若适配器写错（正则改版失效），
       // 这里会静默丢历史——调用方必须统计 no-rule-match 并告警（docs/adr/0003）。
       return { action: "drop", reason: "no-rule-match" };
     }
 
-    // 3. 作品身份键。拿不到任何键也照常往下走，只是后面归不到作品（降级而非丢弃）。
+    // 4. 作品身份键。拿不到任何键也照常往下走，只是后面归不到作品（降级而非丢弃）。
     const { extracted, keys, adapter, parsed } = identityKeysFor(
       incoming,
       watchlist,
@@ -429,25 +436,25 @@ class VisitStore {
       this.adapters,
     );
 
-    // 4. 同组同路径去重：镜像上的同一个页面是同一次访问
+    // 5. 同组同路径去重：镜像上的同一个页面是同一次访问
     const existing = this._findVisitByPath(group.domains, extractPath(incoming.url));
 
-    // 5. 同一标签页 60s 内重报：还是那一次访问，什么都不做（不落库也不广播）
+    // 6. 同一标签页 60s 内重报：还是那一次访问，什么都不做（不落库也不广播）
     if (isRepeatVisit(existing, incoming, ts)) {
       return { action: "ignore", keys, extracted, adapter, parsed };
     }
 
-    // 6. 访问层当日计分：同路径已有访问 → 更新那一张，不新建
+    // 7. 访问层当日计分：同路径已有访问 → 更新那一张，不新建
     const scored = existing ? computeDailyScore(existing, ts) : null;
 
-    // 7. 作品归属 + 作品层当日计分
+    // 8. 作品归属 + 作品层当日计分
     const visit = this.works.recordWorkVisit({ keys, title: incoming.title, timestamp: ts });
     const workId = visit.work ? visit.work.id : null;
     // 适配器的命名捕获组抠出的**版本**随访问落库（来源 = 站点 + 版本）
     const edition = (extracted && extracted.edition) || "";
     const outcome = { work: visit.work, ambiguous: visit.ambiguous, keys, extracted, adapter, parsed };
 
-    // 8. 落库
+    // 9. 落库
     if (existing) {
       const record = this.updateRecord(
         existing.id,

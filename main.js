@@ -16,6 +16,7 @@ const {
 const { agentLoop, executeApprovedActions } = require("./agent/executor");
 const { createAIProviders } = require("./agent/providers");
 const { createAdapterHealth } = require("./agent/adapter-health");
+const { listFetchTargets, collectListEntries } = require("./agent/adapter");
 const { reflectPrompt } = require("./agent/analysis-pipeline");
 const { applyReflection } = require("./agent/reflect");
 
@@ -146,6 +147,7 @@ async function init() {
     providers: aiProviders,
     executeTool,
     getAdapterHealth: () => adapterHealth.snapshot(),
+    fetchCandidates: fetchCandidates,
     // agent 执行进度不是 store 的状态变更，走传输层自己的广播，不问 store 要事件。
     // ponytail: executor 交来整条事件对象，这里按封装前的线上形状（整条对象当 type）
     // 转发，保持无行为变化。代价是 agent_status 在渲染端一直不可见
@@ -221,14 +223,14 @@ function healthSnapshot() {
 function handleExtensionMessage(ws, msg) {
   switch (msg.type) {
     case "addRecord": {
-      // 一条访问走一条通道：闸门 → 身份键 → 同组同路径去重 → 当日计分 →
+      // 一条访问走一条通道：列表页 → 闸门 → 身份键 → 同组同路径去重 → 当日计分 →
       // 作品归属 → 落库，全部在 store 内一次判完（docs/adr/0002）。
       // store.recordVisit 自己发出那唯一一条 recordAdded/recordUpdated 广播
       // （带访问 + 作品行 + 统计），这里只补适配器健康度。
       const result = store.recordVisit(msg);
       const dropped = result.action === "drop";
-      // 健康度按适配器记：认下的适配器看它有没有解析出身份字段，没认下的页看站点闸门。
-      adapterHealth.noteVisit(result, msg.domain);
+      // 列表页是适配器声明过的正常页面，不算适配器失效（ADR-0005）。
+      if (result.reason !== "list-page") adapterHealth.noteVisit(result, msg.domain);
       // 命中与丢弃都各记一次，健康度独立于 recordAdded 广播推给界面。
       broadcastToExtensions({
         type: "adapterHealthUpdated",
@@ -296,6 +298,76 @@ async function triggerReflectionOnDelete(deletedRecords) {
   } catch (e) {
     console.error("Reflection on delete error:", e);
   }
+}
+
+// ── 候选抓取 ────────────────────────────────────────────────────────────────
+// ADR-0005：适配器声明列表页，App 用**隐藏 BrowserWindow** 载入并执行站点的 JS，
+// 然后在渲染后的 DOM 上跑与扩展**同一套** collect 选择器（同一个自足函数）。
+// 只在用户点击时触发，不登记不抓，也不翻分页。
+
+/** 在隐藏窗口里把一个列表页渲染出来，抽出条目；失败抛出（不静默）。 */
+async function loadListEntries(listDecl, pageUrl) {
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const destroy = () => {
+    if (!win.isDestroyed()) win.destroy();
+  };
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        win.webContents.removeAllListeners();
+        reject(new Error("列表页载入超时"));
+      }, 20000);
+      win.webContents.once("did-finish-load", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      win.webContents.once("did-fail-load", (_e, code, desc) => {
+        clearTimeout(timer);
+        reject(new Error(`列表页载入失败 ${code} ${desc}`));
+      });
+      win.loadURL(pageUrl);
+    });
+    const expr = `(${collectListEntries.toString()})(${JSON.stringify(listDecl)}, document, location.href)`;
+    // SPA 的 did-finish-load 早于列表出现：轮询到条目出现为止（ADR-0005）。
+    for (let i = 0; i < 25; i++) {
+      const entries = await win.webContents.executeJavaScript(expr, true);
+      if (entries && entries.length) return entries;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return [];
+  } finally {
+    destroy();
+  }
+}
+
+/** 点击「抓取候选」后：每个登记站点声明的列表页抓一次，条目落成候选。 */
+async function fetchCandidates() {
+  const targets = listFetchTargets(store.getAdapters(), store.getWatchlist());
+  const failures = [];
+  let inserted = 0;
+  let updated = 0;
+  for (const target of targets) {
+    try {
+      const entries = await loadListEntries(target.list, target.url);
+      const result = store.importCandidates({
+        adapterFile: target.adapterFile,
+        listName: target.listName,
+        domain: target.domain,
+        matchedRule: target.matchedRule,
+        groupLabel: target.groupLabel,
+        entries,
+      });
+      inserted += result.inserted;
+      updated += result.updated;
+    } catch (e) {
+      // 抓取失败必须可见，不能静默（ADR-0005）。
+      failures.push({ url: target.url, error: e.message });
+    }
+  }
+  return { fetched: targets.length, inserted, updated, failures };
 }
 
 // ── Window ───────────────────────────────────────────────────────────────────
