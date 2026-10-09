@@ -20,9 +20,16 @@ function check(cond, msg) {
 
   // 与 main.js 同一条线：store 的 (type, payload) 经信封变成客户端消息。
   const messages = [];
-  const store = new RecordStore(":memory:", (type, payload) =>
-    messages.push(toClientMessage(type, payload)),
-  );
+  const store = new RecordStore(":memory:", (type, payload) => {
+    // 契约本身也测：载荷必须是指名对象。裸值（数组 / 布尔）经 `{type, ...payload}`
+    // 铺开后只剩事件名，客户端读到的具名字段全丢——这正是 issue #53 的成因。
+    assert.ok(
+      payload === undefined ||
+        (typeof payload === "object" && payload !== null && !Array.isArray(payload)),
+      `${type} 的载荷必须是指名对象，收到 ${Array.isArray(payload) ? "数组" : typeof payload}`,
+    );
+    messages.push(toClientMessage(type, payload));
+  });
   await store.init();
 
   // watchlist：扩展读 msg.watchlist（增 / 删 / 批量同步都要带）
@@ -107,6 +114,24 @@ function check(cond, msg) {
       messages[0].record &&
       messages[0].record.id === "r1",
     "回访只发一条 recordUpdated，带 record 对象",
+  );
+
+  // 待审批队列：渲染层重拉队列，但广播仍须带具名 actions（裸数组是同一类 bug）。
+  console.log("\nTest: agentPendingUpdated 广播带 actions 数组");
+  messages.length = 0;
+  store.insertPendingActions("conv-1", [{ tool: "t1", args: { a: 1 } }]);
+  const pending = messages.filter((m) => m.type === "agentPendingUpdated").pop();
+  check(
+    Array.isArray(pending && pending.actions) && pending.actions.length === 1,
+    "动作入队：agentPendingUpdated 带 actions 数组",
+  );
+
+  messages.length = 0;
+  store.resolvePendingActions([pending.actions[0].id], "approved");
+  const resolved = messages.filter((m) => m.type === "agentPendingUpdated").pop();
+  check(
+    Array.isArray(resolved && resolved.actions) && resolved.actions.length === 0,
+    "动作裁决：agentPendingUpdated 带 actions 数组（已清空）",
   );
 
   console.log("\nAll broadcast contract tests passed.");
