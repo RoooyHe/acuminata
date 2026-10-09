@@ -172,7 +172,7 @@ class AgentMemoryStore {
       this.insertPendingAction(conversationId, a.tool, a.args);
     }
     if (actions && actions.length > 0) {
-      this.emit("agentPendingUpdated", this.getPendingActions());
+      this.emit("agentPendingUpdated", { actions: this.getPendingActions() });
     }
   }
 
@@ -193,7 +193,7 @@ class AgentMemoryStore {
   /** 批量裁决待审批动作，并广播一次队列现状。 */
   resolvePendingActions(ids, status) {
     for (const id of ids || []) this.resolvePendingAction(id, status);
-    this.emit("agentPendingUpdated", this.getPendingActions());
+    this.emit("agentPendingUpdated", { actions: this.getPendingActions() });
   }
 }
 
