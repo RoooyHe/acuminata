@@ -1,7 +1,6 @@
 # 适配器模板
 
-一个适配器 = 一个 JSON 文件 = 一个平台（含它的镜像）。放在 `adapters/` 下。
-范例就是内置的那个：`adapters/maccms.json`。
+一个适配器 = 一个 JSON 文件 = 一个平台（含它的镜像）。内置的放在仓库的 `adapters/` 下（范例就是 `adapters/maccms.json`），用户写的放在用户数据目录的 `adapters/` 下（Electron 的 `userData/adapters`，打包后内置目录不可写）。两个目录同一个 loader、同一种格式；同名文件以用户目录为准，可以覆盖内置的。
 
 > 加载目录、以及在程序启动时接上，是 `agent/adapters.js` 的 `loadAdapters()`；`RecordStore` 启动时读一次，写入路径与推给扩展的那一份是同一份（见下面「实现状态」）。
 
@@ -209,7 +208,7 @@
 |---|---|
 | `detect.pageGlobal`、`collect`（含 `many`、选择器/属性有序备选）、`parse`（`from` / 命名捕获组） | `domains`、`{label:"主演"}` 与 `attr:"a@text"`（按标签文本定位）、`list` 列表页 |
 
-`loadAdapters()` 能读 `adapters/` 目录（内置与用户写在同一个目录、同一段代码，没有特权路径），
+`loadAdapters()` 能读一个或多个目录（内置 + 用户，后一个覆盖前一个的同名文件，没有特权路径），
 `RecordStore` 启动时读一次，交给两处：
 
 - **写入路径**（`agent/cluster.js` 的 `identityKeysFor`）：认平台 → `parse` → 作品身份键
@@ -220,5 +219,8 @@ detect 与 collect 要 DOM，所以住在 `shared/page-collect.js`：扩展用
 跑真实页面夹具。**认平台由桌面端决定**（`detectBySignature`）——扩展只回传页面签名
 （`pageSignature`）与各适配器 collect 抽到的字段（`pageFields`），判定只有一处。
 
-仍未接上：把用户适配器接上、并在健康度里报告失效是 #28。
+仍未接上：`list` 列表页（候选）是 #30。
+用户适配器已接上：`main.js` 启动时把用户数据目录的 `adapters/` 追加进加载目录（#28）；
+适配器健康度按**适配器**记（不是站点）——一个适配器连续多次没解析出**身份字段**，
+或平台签名被改掉后 `detect` 落空，连续丢弃达到阈值就标为**疑似失效**，不静默（ADR-0003、0006）。
 采集字段落库（`records.pageSignature` / `records.pageFields`）与「重新解析历史」是 #27。

@@ -368,8 +368,10 @@ class VisitStore {
    *         favIconUrl?, description?, ogImage?, pageSignature?, pageFields?}
    * @returns {{ action:"drop"|"ignore"|"insert"|"update", reason?:string,
    *            record?:Object, work?:Object|null, ambiguous?:boolean,
-   *            keys?:Array<{kind:string,value:string,confidence:string}>, extracted?:Object }}
+   *            keys?:Array<{kind:string,value:string,confidence:string}>, extracted?:Object,
+   *            adapter?:Object|null, parsed?:Object }}
    *          work 为 null 表示降级：记录照常存在，只是归不到作品。
+   *          adapter / parsed 供适配器健康度判断「认下的适配器有没有解析出身份字段」。
    *          ambiguous 为 true 表示身份键指向多部作品，按 ADR-0002 不静默合并。
    */
   recordVisit(incoming) {
@@ -389,14 +391,19 @@ class VisitStore {
     }
 
     // 3. 作品身份键。拿不到任何键也照常往下走，只是后面归不到作品（降级而非丢弃）。
-    const { extracted, keys } = identityKeysFor(incoming, watchlist, group.rules, this.adapters);
+    const { extracted, keys, adapter, parsed } = identityKeysFor(
+      incoming,
+      watchlist,
+      group.rules,
+      this.adapters,
+    );
 
     // 4. 同组同路径去重：镜像上的同一个页面是同一次访问
     const existing = this._findVisitByPath(group.domains, extractPath(incoming.url));
 
     // 5. 同一标签页 60s 内重报：还是那一次访问，什么都不做（不落库也不广播）
     if (isRepeatVisit(existing, incoming, ts)) {
-      return { action: "ignore", keys, extracted };
+      return { action: "ignore", keys, extracted, adapter, parsed };
     }
 
     // 6. 访问层当日计分：同路径已有访问 → 更新那一张，不新建
@@ -407,7 +414,7 @@ class VisitStore {
     const workId = visit.work ? visit.work.id : null;
     // 适配器的命名捕获组抠出的**版本**随访问落库（来源 = 站点 + 版本）
     const edition = (extracted && extracted.edition) || "";
-    const outcome = { work: visit.work, ambiguous: visit.ambiguous, keys, extracted };
+    const outcome = { work: visit.work, ambiguous: visit.ambiguous, keys, extracted, adapter, parsed };
 
     // 8. 落库
     if (existing) {
