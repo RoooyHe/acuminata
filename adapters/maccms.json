@@ -46,6 +46,21 @@
           "attr": ["data-original", "data-src", "src"]
         }
       ]
+    },
+    {
+      "name": "国产系列",
+      "url": "https://111.9977hsck.cc/vodtype/2.html",
+      "pageUrl": "https://111.9977hsck.cc/vodtype/2-{page}.html",
+      "item": ["a[data-original][href^='/v5/']"],
+      "collect": [
+        { "field": "url", "selector": "", "attr": "href" },
+        { "field": "title", "selector": "", "attr": "title" },
+        {
+          "field": "cover",
+          "selector": "",
+          "attr": ["data-original", "data-src", "src"]
+        }
+      ]
     }
   ]
 }
