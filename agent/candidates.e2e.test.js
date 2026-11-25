@@ -5,8 +5,9 @@
  * 夹具是**真实抓下来的 MacCMS 列表页**，不是构造的小样本：
  *   test/fixtures/maccms-mgtvtv-list.html   /show/2-1/              主题 mxpro
  *   test/fixtures/maccms-aiqiyi-list.html   /vodshow/2-----------1.html  主题 a_0012
+ *   test/fixtures/maccms-hsck-list.html     /vodtype/2.html       主题 stui_default
  *
- * 两个主题的条目选择器、封面取法完全不同，却由同一份平台适配器声明——
+ * 三个主题的条目选择器、封面取法完全不同，却由同一份平台适配器声明——
  * 证明列表页与访问页共用同一种「有序备选」写法（docs/adapters/template.md）。
  *
  * 再用临时库证明 ADR-0005 的三个角色：声明的列表页
@@ -51,8 +52,11 @@ function loadList(file, url) {
 
 const adapters = loadAdapters();
 const mac = adapters.find((a) => a.file === "maccms.json");
+// 按 url 找列表声明，不按下标——加一个站点不会打乱其它断言。
+const hsckList = mac.list.find((l) => l.url.includes("9977hsck.cc"));
 const mgtvtv = loadList("maccms-mgtvtv-list.html", "https://www.mgtvtv.com/show/2-1/");
 const aiqiyi = loadList("maccms-aiqiyi-list.html", "https://aiqiyi.ai/vodshow/2-----------1.html");
+const hsck = loadList("maccms-hsck-list.html", "https://111.9977hsck.cc/vodtype/2.html");
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-candidates-"));
 const dbPath = path.join(tmpDir, "tracker.db");
@@ -73,6 +77,21 @@ async function runTests() {
   ok(aiqEntries[0].url.startsWith("https://aiqiyi.ai/voddetail/"), "条目地址绝对化");
   ok(aiqEntries[0].cover.includes("/upload/vod/"), "另一个主题的封面来自 data-original");
 
+  // 第三个主题（stui_default）：同一个 thumb class 下混着广告条目，
+  // 条目选择器因此锚在**路由族**（/v5/）而不是 class 上。
+  const hsckEntries = collectListEntries(hsckList, hsck.doc, hsck.url);
+  eq(hsckEntries.length, 40, "hsck 列表页抽出 40 条（广告条目被路由模式挡掉）");
+  ok(
+    hsckEntries.every((e) => e.url.startsWith("https://111.9977hsck.cc/v5/")),
+    "条目的相对地址补成绝对地址",
+  );
+  ok(hsckEntries.every((e) => e.title && e.title.length > 0), "条目带标题（取自 thumb 的 title 属性）");
+  ok(hsckEntries.every((e) => e.cover.startsWith("https://")), "条目带封面（data-original）");
+  ok(
+    hsckEntries.some((e) => e.cover.includes("/images/2026/")),
+    "封面是这个站自己的图床形状（不是 /upload/vod/）",
+  );
+
   // ── ② 列表页的三个角色：靠适配器声明，不靠 regexFilter ──
   console.log("\n② 列表页的角色");
   ok(isListPageUrl(adapters, "https://www.mgtvtv.com/show/2-3/"), "分页模板命中的也是列表页");
@@ -90,12 +109,24 @@ async function runTests() {
     "年份筛选（同样的 vodshow 前缀）不是声明的列表页",
   );
   ok(!isListPageUrl(adapters, "https://www.mgtvtv.com/tv/94939/"), "作品页不是列表页");
+  ok(isListPageUrl(adapters, "https://111.9977hsck.cc/vodtype/2.html"), "hsck 的列表页认得出");
+  ok(isListPageUrl(adapters, "https://111.9977hsck.cc/vodtype/2-7.html"), "hsck 的分页模板命中的也是列表页");
+  ok(
+    !isListPageUrl(adapters, "https://111.9977hsck.cc/v5/289708-1-1.html"),
+    "hsck 的作品页不是列表页",
+  );
 
   const registered = listFetchTargets(adapters, [{ domain: "mgtvtv.com", label: "芒果" }]);
   eq(registered.length, 1, "只抓用户登记过的站点");
   eq(registered[0].matchedRule, "mgtvtv.com", "候选的分组取登记站点");
   eq(registered[0].groupLabel, "芒果", "候选的来源站点带上分组标签");
   eq(listFetchTargets(adapters, [{ domain: "bilibili.com" }]).length, 0, "没登记的站点一个都不抓");
+
+  // 登记父域名即可：扩展按后缀匹配主机名，桌面抓取也按后缀。
+  const hsckTargets = listFetchTargets(adapters, [{ domain: "9977hsck.cc", label: "黄色仓库" }]);
+  eq(hsckTargets.length, 1, "登记父域名就抓得到子域名上的列表页");
+  eq(hsckTargets[0].url, "https://111.9977hsck.cc/vodtype/2.html", "抓的是声明的那个列表页");
+  eq(hsckTargets[0].matchedRule, "9977hsck.cc", "候选的分组取登记站点");
 
   // ── ③ 临时库：列表页不产生访问、不产生作品；条目落成候选 ──
   console.log("\n③ 一条列表页访问");

@@ -58,17 +58,17 @@
 
 ### 平台级适配器只能依赖主题无关的东西
 
-一个适配器要盖住成百上千个站，而**每个站的路由、主题、class 名、分页形状、懒加载属性都不一样**。实测两个 MacCMS 站：
+一个适配器要盖住成百上千个站，而**每个站的路由、主题、class 名、分页形状、懒加载属性都不一样**。实测三个 MacCMS 站：
 
-| | `mgtvtv.com` | `aiqiyi.ai` |
-|---|---|---|
-| 平台签名 | `var maccms=` | `var maccms=` **同** |
-| 主题 | `/template/mxpro/`（Tailwind + Element Plus） | `/template/a_0012/`（Bootstrap + ewave） |
-| 作品页路由 | `/tv/{id}/` | `/voddetail/{id}.html` |
-| 列表页路由 | `/show/{type}-{page}/` | `/vodshow/{type}-----------{page}.html` |
-| 条目选择器 | `a.video-item` | `.pic` / `.img-wrapper` / `.ranking-item` |
-| 封面怎么取 | `img@src` | **`img@data-original`**（`src` 是占位 gif） |
-| 封面路径形状 | `/upload/vod/{date}-{n}/{hash}.webp` | **一样** |
+| | `mgtvtv.com` | `aiqiyi.ai` | `111.9977hsck.cc` |
+|---|---|---|---|
+| 平台签名 | `var maccms=` | `var maccms=` **同** | `var maccms=` **同** |
+| 主题 | `/template/mxpro/`（Tailwind + Element Plus） | `/template/a_0012/`（Bootstrap + ewave） | `stui_default` |
+| 作品页路由 | `/tv/{id}/` | `/voddetail/{id}.html` | `/v5/{id}-1-1.html` |
+| 列表页路由 | `/show/{type}-{page}/` | `/vodshow/{type}-----------{page}.html` | `/vodtype/{type}-{page}.html` |
+| 条目选择器 | `a.video-item` | `.pic` / `.img-wrapper` / `.ranking-item` | `a[href^='/v5/'][data-original]`（**路由族**，不是 class） |
+| 封面怎么取 | `img@src` | **`img@data-original`**（`src` 是占位 gif） | `a@data-original`（封面在**条目链接自己**上） |
+| 封面路径形状 | `/upload/vod/{date}-{n}/{hash}.webp` | **一样** | `/images/{y}/{m}/{d}/{hash}.jpg` |
 
 所以：
 
@@ -81,7 +81,7 @@
 ]
 ```
 
-**2. 优先锚在 URL/属性模式上，不锚在 class 上。** `img[src*='/upload/vod/']` 跨主题有效；`img.el-image__inner` 换个主题就废。
+**2. 优先锚在 URL/属性模式上，不锚在 class 上。** `img[src*='/upload/vod/']` 跨主题有效；`img.el-image__inner` 换个主题就废。**路由族**（`a[href^='/v5/']`）比 class 更稳——同一个站里广告条目与作品条目共用同一个 class，只有路由分得开。
 
 **3. 需要时可按标签文本定位。** MacCMS 自己的字段标签（`主演：`、`导演：`、`年份：`）是跨主题共享的，而它们包着的 class 不是：
 
