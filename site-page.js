@@ -4,13 +4,14 @@
 // 站点页跑在自己的持久化 partition 里：登录态因此跨重启存活，
 // 媒体资源的协议层改写（ADR-0012）也挂在这个 session 上，不碰应用自己的界面 session。
 //
-// 站点页只做两件事：**把页面打开** 与 **把看到的东西交出去**。
+//
 // 算不算一次访问、归到哪部作品，都不在这里判——那是 store.recordVisit 的事。
 
 const { BrowserWindow, session } = require("electron");
 const { collectPage } = require("./shared/page-collect");
+const { detectNativePlayer, takeoverNativePlayer } = require("./shared/native-player");
 const { extractDomain, matchSite } = require("./shared/site-match");
-const { createMediaProxy } = require("./media-proxy");
+const { createMediaProxy, proxyUrl, SCOPE_APP } = require("./media-proxy");
 
 // 持久化 partition：登录态跨重启存活（cookie 落盘）。
 const PARTITION = "persist:acuminata";
@@ -24,6 +25,7 @@ const PARTITION = "persist:acuminata";
 function createSitePage({ getAdapters, getWatchlist, onVisit }) {
   const siteSession = session.fromPartition(PARTITION);
   let win = null;
+  let takeoverGeneration = 0;
 
   // 媒体资源经代理改写：站点页拉到的清单没有流内广告（ADR-0012）。
   // 代理只管媒体：站点的其余流量不经过它，页面的行为一点不变。
@@ -48,16 +50,37 @@ function createSitePage({ getAdapters, getWatchlist, onVisit }) {
       },
     });
     win.on("closed", () => {
+      takeoverGeneration++;
       win = null;
     });
     // 整页换页与页内换页（history.pushState）都算一次新页面：两种都得采。
     win.webContents.on("did-finish-load", () => {
       capture().catch((e) => console.error("[SitePage] capture failed:", e));
+      takeover().catch((e) => console.error("[SitePage] native takeover failed:", e));
     });
     win.webContents.on("did-navigate-in-page", () => {
       capture().catch((e) => console.error("[SitePage] capture failed:", e));
+      takeover().catch((e) => console.error("[SitePage] native takeover failed:", e));
     });
     return win;
+  }
+
+  async function takeover() {
+    const generation = ++takeoverGeneration;
+    const detectExpr = `(${detectNativePlayer.toString()})()`;
+    while (generation === takeoverGeneration && win && !win.isDestroyed()) {
+      const media = await win.webContents.executeJavaScript(detectExpr, true);
+      if (media && media.src) {
+        const request = {
+          ...media,
+          nativeSrc: proxyUrl(media.src, "segment", SCOPE_APP),
+        };
+        const expr = `(${takeoverNativePlayer.toString()})(${JSON.stringify(request)})`;
+        if (await win.webContents.executeJavaScript(expr, true)) return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return false;
   }
 
   /**
