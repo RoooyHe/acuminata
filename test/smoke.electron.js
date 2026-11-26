@@ -10,6 +10,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const http = require("http");
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { loadPreloadRoutes } = require("./preload-routes");
 
@@ -25,6 +26,11 @@ const SEED_WS_DOMAIN = "smoke-ws.example";
 const SEED_WS_URL = "https://smoke-ws.example/v/42";
 const SEED_WS_TITLE = "SMOKE 上报 δ";
 const SEED_CANDIDATE_TITLE = "SMOKE 候选 ε";
+// 站点页要开一个真页面：用本机 HTTP 伺服一份站点页夹具。
+// 它的域名（127.0.0.1）因此要登记成站点，访问才落库（兴趣分析只管登记过的站点）。
+const SITE_DOMAIN = "127.0.0.1";
+const SITE_PATH = "/v/42";
+const SITE_TITLE = "《冒烟作品》";
 const TIMEOUT_MS = 60000;
 const WS_PORT = 8766;
 
@@ -60,6 +66,8 @@ async function seedDatabase() {
   const store = new RecordStore(dbPath);
   await store.init();
   store.addWatchlist({ domain: "tvmao.com", label: "电视猫", color: "#fff" });
+  // 站点页伺服在本机：登记它的域名，站点页开出来的访问才落库。
+  store.addWatchlist({ domain: SITE_DOMAIN, label: "冒烟站点页", color: "#fff" });
   store.addWatchlist({
     domain: SEED_WS_DOMAIN,
     label: "冒烟站",
@@ -170,6 +178,29 @@ function waitForLoad(win) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * 站点页伺服：在本机开一个 HTTP 口，把站点页夹具发出去。
+ * 站点页因此开的是**真页面**（真加载、真执行页内脚本），而不是假的对象。
+ */
+function startSiteServer() {
+  const html = fs.readFileSync(
+    path.join(__dirname, "fixtures", "site-page.html"),
+    "utf8",
+  );
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(html);
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({
+        server,
+        url: `http://${SITE_DOMAIN}:${server.address().port}${SITE_PATH}`,
+      });
+    });
+  });
+}
+
+/**
  * 当一次扩展用：连上主进程的 WS，上报一条访问，再重报同一条。
  *
  * main.js 的 addRecord 分支除此之外没有别的入口——而它正是「一条访问只需一次
@@ -235,6 +266,36 @@ async function reportVisitOverWs() {
     recordBroadcasts: recordMsgs.length,
     recordHasField: !!(recordMsgs[0] && recordMsgs[0].record),
     recordHasHealth: !!(recordMsgs[0] && recordMsgs[0].health),
+  };
+}
+
+/**
+ * 站点页通路：界面上的「打开来源」→ 应用内站点页 → 采集 → 落库。
+ *
+ * 站点页开的是**真页面**（本机 HTTP 伺服），采集因此跑的是页面上真实的
+ * collectPage——与扩展时期注入页面的那个函数同一份（shared/page-collect.js）。
+ * 库里多出来的那条访问、它归到的作品、界面上的作品行与统计，都是这条通路的产物。
+ */
+async function openSitePageAndWait(win, siteUrl) {
+  // 界面上的「打开来源」按钮走的就是 openUrl 这条路由。
+  await win.webContents.executeJavaScript(
+    `window.electronAPI.openUrl(${JSON.stringify(siteUrl)})`,
+  );
+
+  const deadline = Date.now() + 15000;
+  let records = [];
+  while (Date.now() < deadline) {
+    records = await win.webContents.executeJavaScript(
+      `window.electronAPI.getRecords()`,
+    );
+    if (records.some((r) => r.url === siteUrl)) break;
+    await sleep(50);
+  }
+
+  const mine = records.filter((r) => r.url === siteUrl);
+  return {
+    count: mine.length,
+    record: mine[0] || null,
   };
 }
 
@@ -469,6 +530,24 @@ async function main() {
   const visitIpcCalls = readIpcCounts();
   const loopback = await probeBindWidth();
 
+  // 站点页通路：界面上的「打开来源」→ 应用内站点页 → 采集 → 落库。
+  const site = await startSiteServer();
+  const siteVisit = await openSitePageAndWait(win, site.url);
+  site.server.close();
+  // 站点页开的是另一个窗口：冒烟测试里把它收起来，别抢用户的桌面。
+  for (const w of BrowserWindow.getAllWindows()) if (w !== win) w.hide();
+  // 等渲染器把这次广播画完（作品行、统计都该就地更新）。
+  const siteDeadline = Date.now() + 5000;
+  let siteProbe = null;
+  while (Date.now() < siteDeadline) {
+    siteProbe = await win.webContents.executeJavaScript(`({
+      worksText: (document.getElementById('worksContainer') || {}).textContent || '',
+      statTotal: (document.getElementById('statTotal') || {}).textContent || '',
+    })`);
+    if (siteProbe.worksText.includes(SITE_TITLE)) break;
+    await sleep(50);
+  }
+
   const failures = [];
   const expect = (cond, msg) => {
     if (!cond) failures.push(msg);
@@ -633,6 +712,42 @@ async function main() {
   expect(
     consoleErrors.length === 0,
     "renderer console errors: " + consoleErrors.join(" | "),
+  );
+
+  // 站点页：打开一个真页面 → 库里多一条访问 → 归到作品 → 界面上看得见。
+  expect(
+    siteVisit.count === 1,
+    "站点页开出来之后，库里出现了 " + siteVisit.count + " 条访问（应当只有 1 条）",
+  );
+  expect(
+    !!siteVisit.record && !!siteVisit.record.workId,
+    "站点页那条访问没有归到作品（workId 为空）",
+  );
+  expect(
+    !!siteVisit.record && siteVisit.record.description.length > 0,
+    "站点页没有把页面上的描述抽回来",
+  );
+  expect(
+    !!siteVisit.record &&
+      Array.isArray(JSON.parse(siteVisit.record.pageSignature || "[]")) &&
+      JSON.parse(siteVisit.record.pageSignature).includes("maccms"),
+    "站点页没有把页面签名抽回来：" +
+      JSON.stringify(siteVisit.record && siteVisit.record.pageSignature),
+  );
+  expect(
+    !!siteVisit.record &&
+      !!JSON.parse(siteVisit.record.pageFields || "{}")["maccms.json"] &&
+      !!JSON.parse(siteVisit.record.pageFields || "{}")["maccms.json"].cover,
+    "站点页没有把适配器 collect 抽到的字段带回来",
+  );
+  expect(
+    siteProbe && siteProbe.worksText.includes(SITE_TITLE),
+    "站点页那次访问的作品没有出现在作品列表里：" +
+      (siteProbe ? siteProbe.worksText : ""),
+  );
+  expect(
+    siteProbe && siteProbe.statTotal !== "",
+    "站点页那次访问之后统计没有更新",
   );
 
   if (failures.length) {

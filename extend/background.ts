@@ -1,6 +1,7 @@
 import type { Adapter, WatchlistEntry, HistoryRecord } from "../shared/types"
 import { TabTracker } from "./tab-tracker"
 import { WsTransport } from "./ws-transport"
+import { extractDomain, matchSite } from "../shared/site-match"
 
 const WS_URL = "ws://127.0.0.1:8766"
 
@@ -15,28 +16,12 @@ let adapters: Adapter[] = []
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-function extractDomain(url: string): string | null {
-  try {
-    const u = new URL(url)
-    return u.hostname.replace(/^www\./, "")
-  } catch (e) {
-    return null
-  }
-}
+// ── Pure helpers ──────────────────────────────────────────────────────────────
+// 「一个地址属于哪个登记站点」这条规则只有一处：shared/site-match.js。
+// 扩展与桌面端的站点页都用它（ADR-0011）。
 
 function matchesWatchlist(url: string): WatchlistEntry | null {
-  const domain = extractDomain(url)
-  if (!domain) return null
-  for (const entry of watchlist) {
-    const pattern = entry.domain
-      .replace(/^www\./, "")
-      .toLowerCase()
-      .trim()
-    if (domain === pattern || domain.endsWith("." + pattern)) {
-      return entry
-    }
-  }
-  return null
+  return matchSite(url, watchlist)
 }
 
 // ── Persistence ───────────────────────────────────────────────────────────────
