@@ -1,10 +1,15 @@
 // IPCDispatcher — maps channel names to RecordStore methods.
 // Replaces scattered ipcMain.handle calls with a single registration point.
 
-const { shell } = require("electron");
-
 function createIPCDispatcher(ipcMain, store, deps = {}) {
-  const { providers, executeTool, getAdapterHealth, broadcastAgentEvent, fetchCandidates } = deps;
+  const {
+    providers,
+    executeTool,
+    getAdapterHealth,
+    broadcastAgentEvent,
+    fetchCandidates,
+    openSitePage,
+  } = deps;
   const readStore = store.getAgentReadStore();
 
   ipcMain.handle("records:page", (_, page, pageSize, filter) =>
@@ -60,9 +65,11 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
   });
 
   // 来源解析只有一处：store 把域名换成该分组内最近访问过的镜像，这里只负责打开。
-  ipcMain.handle("records:open-url", (_, url) => {
-    shell.openExternal(store.resolveOpenUrl(url));
-  });
+  // 打开在应用内的站点页（ADR-0011）——站点页自己采集并落库，
+  // 外部浏览器那条路（扩展时期）随之删除。
+  ipcMain.handle("records:open-url", (_, url) =>
+    openSitePage(store.resolveOpenUrl(url)),
+  );
 
   ipcMain.handle("watchlist:get", () => store.getWatchlist());
 

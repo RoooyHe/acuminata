@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const WebSocket = require("ws");
 const { RecordStore } = require("./agent/record-store");
+const { createSitePage } = require("./site-page");
 const { toClientMessage } = require("./agent/broadcast");
 const { ADAPTER_DIR } = require("./agent/adapters");
 const { createIPCDispatcher } = require("./agent/ipc-dispatcher");
@@ -31,6 +32,7 @@ const USER_ADAPTER_DIR = path.join(app.getPath("userData"), "adapters");
 
 let mainWindow;
 let extensionServer;
+let sitePage;
 let extensionClients = new Set();
 let store;
 let aiConfig = {
@@ -148,10 +150,20 @@ async function init() {
     readStore: store.getAgentReadStore(),
   });
 
+  // 站点页：Acuminata 自己承载的站点页面（ADR-0011）。它把页面打开、把看到的字段交出来；
+  // 算不算一次访问由下面这条写入路径判（判定只做一次，ADR-0002）。
+  sitePage = createSitePage({
+    getAdapters: () => store.getAdapters(),
+    getWatchlist: () => store.getWatchlist(),
+    onVisit: recordIncomingVisit,
+  });
+
   // IPC
   createIPCDispatcher(ipcMain, store, {
     providers: aiProviders,
     executeTool,
+    // 「打开来源」开在应用内的站点页，而不是外部浏览器（ADR-0011）。
+    openSitePage: (url) => sitePage.open(url),
     // IPC 的 works:health 要的是适配器行本身；访问广播里带走整份快照。
     getAdapterHealth: () => store.getHealthSnapshot().adapters,
     fetchCandidates: fetchCandidates,
@@ -219,31 +231,38 @@ function startExtensionServer() {
 // 计数器由 RecordStore 持有：命中的访问随那唯一一条 record 广播带上快照，
 // 丢弃/去重没有 record 广播，下面的分支单独推一份（一条访问一条广播）。
 
+// 一条访问的来料 → 落库 + 广播。扩展的上报与站点页的采集（ADR-0011）都走这里。
+//
+// 一条访问走一条通道：列表页 → 闸门 → 身份键 → 同组同路径去重 → 当日计分 →
+// 作品归属 → 落库，全部在 store 内一次判完（docs/adr/0002）。
+// store.recordVisit 自己发出那唯一一条 recordAdded/recordUpdated 广播
+// （带访问 + 作品行 + 统计 + 健康度），这里只在没有那条广播时补健康度。
+function recordIncomingVisit(incoming) {
+  const result = store.recordVisit(incoming);
+  if (result.action === "drop" || result.action === "ignore") {
+    // 丢弃/去重都不产生 record 广播，健康度得自己推一次，
+    // 否则「连续丢弃且从未命中」的站点要等下一次无关更新才看得见。
+    broadcastToExtensions(
+      toClientMessage("adapterHealthUpdated", { health: store.getHealthSnapshot() }),
+    );
+    return result;
+  }
+
+  // 身份键指向多部作品：按 ADR-0002 那是「误合」风险，不静默合并，
+  // 只报到日志等用户裁决（记录已经照常落库）。
+  if (result.ambiguous) {
+    console.warn(
+      "[Works] 身份键指向多个作品，需要用户裁决:",
+      JSON.stringify(result.keys),
+    );
+  }
+  return result;
+}
+
 function handleExtensionMessage(ws, msg) {
   switch (msg.type) {
     case "addRecord": {
-      // 一条访问走一条通道：列表页 → 闸门 → 身份键 → 同组同路径去重 → 当日计分 →
-      // 作品归属 → 落库，全部在 store 内一次判完（docs/adr/0002）。
-      // store.recordVisit 自己发出那唯一一条 recordAdded/recordUpdated 广播
-      // （带访问 + 作品行 + 统计 + 健康度），这里只在没有那条广播时补健康度。
-      const result = store.recordVisit(msg);
-      if (result.action === "drop" || result.action === "ignore") {
-        // 丢弃/去重都不产生 record 广播，健康度得自己推一次，
-        // 否则「连续丢弃且从未命中」的站点要等下一次无关更新才看得见。
-        broadcastToExtensions(
-          toClientMessage("adapterHealthUpdated", { health: store.getHealthSnapshot() }),
-        );
-        return;
-      }
-
-      // 身份键指向多部作品：按 ADR-0002 那是「误合」风险，不静默合并，
-      // 只报到日志等用户裁决（记录已经照常落库）。
-      if (result.ambiguous) {
-        console.warn(
-          "[Works] 身份键指向多个作品，需要用户裁决:",
-          JSON.stringify(result.keys),
-        );
-      }
+      recordIncomingVisit(msg);
       break;
     }
     case "getStats": {
