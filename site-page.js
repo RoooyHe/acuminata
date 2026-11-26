@@ -10,6 +10,7 @@
 const { BrowserWindow, session } = require("electron");
 const { collectPage } = require("./shared/page-collect");
 const { extractDomain, matchSite } = require("./shared/site-match");
+const { createMediaProxy } = require("./media-proxy");
 
 // 持久化 partition：登录态跨重启存活（cookie 落盘）。
 const PARTITION = "persist:acuminata";
@@ -23,6 +24,13 @@ const PARTITION = "persist:acuminata";
 function createSitePage({ getAdapters, getWatchlist, onVisit }) {
   const siteSession = session.fromPartition(PARTITION);
   let win = null;
+
+  // 媒体资源经代理改写：站点页拉到的清单没有流内广告（ADR-0012）。
+  // 代理只管媒体：站点的其余流量不经过它，页面的行为一点不变。
+  createMediaProxy({
+    session: siteSession,
+    getReferer: () => (win && !win.isDestroyed() ? win.webContents.getURL() : ""),
+  });
 
   /** 站点页窗口：没有就开一个，有就复用。 */
   function ensureWindow() {

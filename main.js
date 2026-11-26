@@ -20,6 +20,11 @@ const { createAIProviders } = require("./agent/providers");
 const { listFetchTargets, collectListEntries } = require("./agent/adapter");
 const { reflectPrompt } = require("./agent/analysis-pipeline");
 const { applyReflection } = require("./agent/reflect");
+const { registerMediaScheme } = require("./media-proxy");
+
+// 媒体代理的 scheme：站点页的媒体请求被重定向到这里（ADR-0012）。
+// 必须在 app ready 之前登记，否则 Chromium 不认这个 scheme。
+registerMediaScheme();
 
 const EXTENSION_PORT = 8766;
 // Explicit override only (used by the smoke test); otherwise the user's real DB.

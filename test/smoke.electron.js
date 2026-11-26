@@ -38,6 +38,10 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-smoke-"));
 const dbPath = path.join(tmpDir, "tracker.db");
 // Only explicit setting wins; this keeps main.js away from the user's real DB.
 process.env.ACUMINATA_DB_PATH = dbPath;
+// 媒体代理的 scheme 要在 app ready 之前登记（Chromium 的规矩）。
+// 冒烟测试是在 ready 之后才 require main.js 的，所以这里先登记一次；
+// main.js 里那次是第二次，登记函数认得出来，直接跳过。
+require("../media-proxy").registerMediaScheme();
 
 // Count every renderer→main invoke. Wrapping ipcMain.handle before main.js loads
 // is what makes "one visit no longer triggers a full re-pull" assertable.
@@ -180,21 +184,65 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * 站点页伺服：在本机开一个 HTTP 口，把站点页夹具发出去。
  * 站点页因此开的是**真页面**（真加载、真执行页内脚本），而不是假的对象。
+ *
+ * 伺服还发一份清单与两个分片：站点页里的 <video> 拉它们，经媒体代理改写
+ * （去广告、地址改绝对）。广告段也备着：它若被请求过，说明广告没被去掉。
  */
 function startSiteServer() {
   const html = fs.readFileSync(
     path.join(__dirname, "fixtures", "site-page.html"),
     "utf8",
   );
+  const seg0 = fs.readFileSync(path.join(__dirname, "fixtures", "media", "segment-0.ts"));
+  const seg1 = fs.readFileSync(path.join(__dirname, "fixtures", "media", "segment-1.ts"));
+  const requested = [];
+  let origin = "";
   const server = http.createServer((req, res) => {
+    requested.push(req.url);
+    if (req.url === "/media/index.m3u8") {
+      res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl" });
+      res.end(
+        [
+          "#EXTM3U",
+          "#EXT-X-VERSION:3",
+          "#EXT-X-TARGETDURATION:1",
+          "#EXT-X-MEDIA-SEQUENCE:0",
+          "#EXT-X-PLAYLIST-TYPE:VOD",
+          "#EXTINF:1.00000,",
+          `${origin}/media/segment-0.ts`,
+          "#EXT-X-DISCONTINUITY",
+          "#EXT-X-KEY:METHOD=NONE",
+          "#EXTINF:3.00000,",
+          "/media/ad-0.ts",
+          "#EXT-X-DISCONTINUITY",
+          "#EXTINF:1.00000,",
+          `${origin}/media/segment-1.ts`,
+          "#EXT-X-ENDLIST",
+          "",
+        ].join("\n"),
+      );
+      return;
+    }
+    if (req.url.startsWith("/media/segment-")) {
+      const body = req.url.endsWith("segment-1.ts") ? seg1 : seg0;
+      res.writeHead(200, {
+        "Content-Type": "video/mp2t",
+        "Accept-Ranges": "bytes",
+        "Content-Length": body.length,
+      });
+      res.end(body);
+      return;
+    }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(html);
   });
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
+      origin = `http://${SITE_DOMAIN}:${server.address().port}`;
       resolve({
         server,
-        url: `http://${SITE_DOMAIN}:${server.address().port}${SITE_PATH}`,
+        requested,
+        url: `${origin}${SITE_PATH}`,
       });
     });
   });
@@ -297,6 +345,32 @@ async function openSitePageAndWait(win, siteUrl) {
     count: mine.length,
     record: mine[0] || null,
   };
+}
+
+/**
+ * 站点页里的视频：清单经媒体代理改写后，广告段不该被拉过（issue #75）。
+ * 站点页窗口是站点页自己开的那一个（地址就是站点页的地址）。
+ * @param {Object} mainWin 应用自己的窗口
+ * @param {string} siteUrl 站点页的地址
+ * @returns {Promise<{duration: number, readyState: number, error: string}>}
+ */
+async function probeSiteMedia(mainWin, siteUrl) {
+  const siteWin = BrowserWindow.getAllWindows().find(
+    (w) => w !== mainWin && w.webContents.getURL().startsWith(siteUrl),
+  );
+  if (!siteWin) return { duration: 0, readyState: 0, error: "no site window" };
+  const deadline = Date.now() + 15000;
+  let out = { duration: 0, readyState: 0, error: "timeout" };
+  while (Date.now() < deadline) {
+    out = await siteWin.webContents.executeJavaScript(`(() => {
+      const v = document.getElementById("player");
+      if (!v) return { duration: 0, readyState: 0, error: "no video element" };
+      return { duration: v.duration, readyState: v.readyState, error: v.error && v.error.message };
+    })()`);
+    if (out.readyState >= 1) break;
+    await sleep(100);
+  }
+  return out;
 }
 
 /**
@@ -533,6 +607,9 @@ async function main() {
   // 站点页通路：界面上的「打开来源」→ 应用内站点页 → 采集 → 落库。
   const site = await startSiteServer();
   const siteVisit = await openSitePageAndWait(win, site.url);
+  // 站点页里的视频：清单经媒体代理改写，广告段不再被拉。
+  const siteMedia = await probeSiteMedia(win, site.url);
+  const adRequested = site.requested.includes("/media/ad-0.ts");
   site.server.close();
   // 站点页开的是另一个窗口：冒烟测试里把它收起来，别抢用户的桌面。
   for (const w of BrowserWindow.getAllWindows()) if (w !== win) w.hide();
@@ -748,6 +825,20 @@ async function main() {
   expect(
     siteProbe && siteProbe.statTotal !== "",
     "站点页那次访问之后统计没有更新",
+  );
+
+  // 站点页里的视频：清单经媒体代理改写，广告段不再被拉（issue #75）。
+  expect(
+    !adRequested,
+    "站点页拉过了广告段（广告没被去掉）：" + JSON.stringify(site.requested),
+  );
+  expect(
+    siteMedia.readyState >= 1,
+    "站点页里的视频没有起播：" + JSON.stringify(siteMedia),
+  );
+  expect(
+    siteMedia.duration > 0,
+    "站点页里的视频读不到时长：" + JSON.stringify(siteMedia),
   );
 
   if (failures.length) {
