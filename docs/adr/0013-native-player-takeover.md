@@ -15,4 +15,4 @@ status: accepted
 - **代理补 CORS 头**：跨源取分片需要 `Access-Control-Allow-Origin`。
 - **Electron 42（Chromium 148）原生支持 HLS**，不引入 hls.js 这类播放器库。
 - **广告是怎么插进来的，规则要按真实站点定**。`EXT-X-MEDIA`（带 URI 的广告轨/字幕轨）是已验证可去的一类；插播广告段（`EXT-X-CUE-OUT`/`CUE-IN`、`EXT-X-DISCONTINUITY` 配对、独立的广告 m3u8）在真实站点上的形状要抓下来再定规则，不能凭猜。
-- **流内广告与页面花活是两回事**：流内在代理里改；页面花活（假播放按钮、浮层广告、强制分享弹窗）按平台写规则，落在适配器里（ADR-0003/0006）。
+- **流内广告与页面花活是两回事**：流内在代理里改；页面花活（假播放按钮、浮层广告、强制分享弹窗）按平台写规则，落在适配器里（ADR-0003/0006）。原生播放器的隐藏与挂载规则使用适配器的 `playback.hide` 与 `playback.mount`，格式见 `docs/adapters/template.md`。

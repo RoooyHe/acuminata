@@ -21,6 +21,11 @@
 
   "mirrors": [["example.com", "example-mirror.com"]],
 
+  "playback": {
+    "hide": [".third-party-player", "#player > iframe"],
+    "mount": ["#native-player", ".player-container"]
+  },
+
   "collect": [
     { "field": "codeFromDom", "selector": "span.video-code", "attr": "text" },
     { "field": "duration",    "selector": "meta[itemprop='duration']", "attr": "content" },
@@ -54,6 +59,7 @@
 | `name` | | 适配器名（平台名） |
 | `collect` | | **可选。** 从页面 DOM 抽取具名字段。没有它，就只能用内置的五个字段 |
 | `parse` | | 从具名字段里用正则取出身份字段 |
+| `playback` | | **可选。** 声明原生播放接管时隐藏哪些元素、把原生播放器挂到哪里 |
 | `list` | | **可选。** 声明列表页（最新更新 / 分类 / 演员 / 系列），它们产出候选 |
 
 ### 平台级适配器只能依赖主题无关的东西
@@ -126,6 +132,21 @@
 - 没有番号的剧集站：从封面图 URL 里抠出内容哈希 `c0a55b31c915cab3d80e9863f54f2ee0`
 
 适配器不同，管道完全一样。
+
+### `playback`：原生播放接管
+
+`hide` 与 `mount` 都接受一个 CSS 选择器字符串或字符串数组。`hide` 隐藏每个匹配元素，使用 `visibility` 保留布局。`mount` 是有序备选，第一个匹配元素接收原生视频。原生视频保持原视频的显示矩形、控制条与播放状态。
+
+不写 `playback` 时，程序使用通用接管，把原生视频放在原视频的父元素里。`mount` 全部未命中时也使用这个父元素。声明形状错误或任一选择器无效时，程序忽略整组 `playback`，使用通用接管，并在适配器健康度里报告告警。
+
+MacCMS 使用平台标准播放器作为挂载点，不声明域名：
+
+```json
+"playback": {
+  "mount": ["#MacPlayer", ".MacPlayer"],
+  "hide": [".dplayer", ".artplayer", "#MacPlayer > iframe", ".MacPlayer > iframe"]
+}
+```
 
 ## 列表页（`list`）——候选的来源
 
@@ -209,7 +230,7 @@
 
 | 已读 | 未读（写了但没人读，别用） |
 |---|---|
-| `detect.pageGlobal`、`collect`（含 `many`、选择器/属性有序备选）、`parse`（`from` / 命名捕获组）、`mirrors`、`list` 列表页（`item` / `collect` / `url` / `pageUrl`） | `domains`、`{label:"主演"}` 与 `attr:"a@text"`（按标签文本定位） |
+| `detect.pageGlobal`、`collect`（含 `many`、选择器/属性有序备选）、`parse`（`from` / 命名捕获组）、`mirrors`、`playback`（`hide` / `mount`）、`list` 列表页（`item` / `collect` / `url` / `pageUrl`） | `domains`、`{label:"主演"}` 与 `attr:"a@text"`（按标签文本定位） |
 
 `loadAdapters()` 能读一个或多个目录（内置 + 用户，后一个覆盖前一个的同名文件，没有特权路径），
 `RecordStore` 启动时读一次，交给两处：
@@ -231,3 +252,5 @@ detect 与 collect 要 DOM，所以住在 `shared/page-collect.js`：扩展用
 存的是**原始字段**；与 `recommendations` 分表；列表页本身在写入路径上被丢弃
 （`isListPageUrl`），不记录为访问、也不产生作品身份。排序把候选变成推荐是 #31。
 页面级 `collect` 与列表条目 `collect` 的规则完全一样，只是作用域不同。
+`playback` 由站点页的原生接管读取（`shared/native-player.js`）。适配器健康度会显示播放规则告警，
+但不会因此增加命中或丢弃计数。
