@@ -1,4 +1,4 @@
-const { WebContentsView, session } = require("electron");
+const { WebContentsView, Menu, session } = require("electron");
 const { randomUUID } = require("crypto");
 const { collectPage, detectBySignature } = require("./shared/page-collect");
 const { detectNativePlayer, takeoverNativePlayer } = require("./shared/native-player");
@@ -287,6 +287,19 @@ function createBrowser({
     contents.setWindowOpenHandler(({ url }) => {
       if (isWebAddress(url) && isLive(tab)) openInTab(tab, url);
       return { action: "deny" };
+    });
+    contents.on("context-menu", (_event, params) => {
+      if (!isWebAddress(params.linkURL)) return;
+      const menu = Menu.buildFromTemplate([{
+        label: "在新标签页打开",
+        click: () => {
+          if (!isLive(tab)) return;
+          const linkedTab = createTab();
+          openInTab(linkedTab, params.linkURL);
+          notifyStateChange();
+        },
+      }]);
+      menu.popup({ window: hostWindow });
     });
     const denyNonWebNavigation = (event, url, _isInPlace, isMainFrame) => {
       if (isMainFrame && !isWebAddress(url)) event.preventDefault();
