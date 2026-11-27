@@ -84,7 +84,7 @@ async function openStore(dbPath, adapters) {
   return store;
 }
 
-/** 落盘：模拟扩展上报后应用退出，下一次启动从文件读回。 */
+/** 落盘：模拟站点页上报后应用退出，下一次启动从文件读回。 */
 function flush(store, dbPath) {
   fs.writeFileSync(dbPath, Buffer.from(store.export()));
 }

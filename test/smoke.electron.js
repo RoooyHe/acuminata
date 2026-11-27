@@ -3,15 +3,14 @@
 //   1. window.electronAPI exists and every route is callable
 //   2. every invoke channel round-trips (a handler is actually registered)
 //   3. the renderer rendered real data read over IPC
-//   4. 扩展上报一条访问只走一次调用（WS → addRecord → RecordStore.recordVisit）
-//   5. WS 服务端只绑回环，同机器上的另一个地址连不上
+//   4. 站点页打开真页面后自动采集、落库并更新渲染器
 // Run with: npm run test:smoke
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const http = require("http");
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow } = require("electron");
 const { loadPreloadRoutes } = require("./preload-routes");
 
 const SEED_TITLE = "SMOKE 预置访问 α";
@@ -21,10 +20,6 @@ const SEED_VISIT_URL_A = "https://bilibili.com/video/smoke";
 const SEED_VISIT_URL_B = "https://tvmao.com/kanju/smoke";
 const SEED_EDITION = "中文字幕";
 const SEED_DWELL_TEXT = "2分5秒";
-// 供主进程那条通路用的站点：带命名捕获组，上报的访问才归得到作品。
-const SEED_WS_DOMAIN = "smoke-ws.example";
-const SEED_WS_URL = "https://smoke-ws.example/v/42";
-const SEED_WS_TITLE = "SMOKE 上报 δ";
 const SEED_CANDIDATE_TITLE = "SMOKE 候选 ε";
 // 站点页要开一个真页面：用本机 HTTP 伺服一份站点页夹具。
 // 它的域名（127.0.0.1）因此要登记成站点，访问才落库（兴趣分析只管登记过的站点）。
@@ -32,7 +27,6 @@ const SITE_DOMAIN = "127.0.0.1";
 const SITE_PATH = "/v/42";
 const SITE_TITLE = "《冒烟作品》";
 const TIMEOUT_MS = 60000;
-const WS_PORT = 8766;
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-smoke-"));
 const dbPath = path.join(tmpDir, "tracker.db");
@@ -43,26 +37,6 @@ process.env.ACUMINATA_LOCAL_COPY_DIR = path.join(tmpDir, "local-copies");
 // main.js 里那次是第二次，登记函数认得出来，直接跳过。
 require("../media-proxy").registerMediaScheme();
 
-// Count every renderer→main invoke. Wrapping ipcMain.handle before main.js loads
-// is what makes "one visit no longer triggers a full re-pull" assertable.
-const ipcCounts = {};
-const rawHandle = ipcMain.handle.bind(ipcMain);
-ipcMain.handle = (channel, fn) =>
-  rawHandle(channel, (...args) => {
-    ipcCounts[channel] = (ipcCounts[channel] || 0) + 1;
-    return fn(...args);
-  });
-
-function resetIpcCounts() {
-  for (const key of Object.keys(ipcCounts)) delete ipcCounts[key];
-}
-
-function readIpcCounts() {
-  return Object.entries(ipcCounts)
-    .filter(([, n]) => n > 0)
-    .map(([channel, n]) => [channel, n]);
-}
-
 const routes = loadPreloadRoutes().routes;
 
 async function seedDatabase() {
@@ -72,13 +46,6 @@ async function seedDatabase() {
   store.addWatchlist({ domain: "tvmao.com", label: "电视猫", color: "#fff" });
   // 站点页伺服在本机：登记它的域名，站点页开出来的访问才落库。
   store.addWatchlist({ domain: SITE_DOMAIN, label: "冒烟站点页", color: "#fff" });
-  store.addWatchlist({
-    domain: SEED_WS_DOMAIN,
-    label: "冒烟站",
-    color: "#fff",
-    regexFilter: "/v/(?<code>[0-9]+)",
-    regexTarget: "url",
-  });
   const ts = Date.now();
   // 预置一部作品，两个站点上是**同名版本**：详情必须分别显示各自的站点。
   const visit = store.recordWorkVisit({
@@ -252,79 +219,10 @@ function startSiteServer() {
 }
 
 /**
- * 当一次扩展用：连上主进程的 WS，上报一条访问，再重报同一条。
- *
- * main.js 的 addRecord 分支除此之外没有别的入口——而它正是「一条访问只需一次
- * 调用」的那一次调用（store.recordVisit），所以这里直接走真实的通路。
- * 库里到底写了什么，也按扩展的方式问主进程要（exportData）。
- */
-async function reportVisitOverWs() {
-  const WebSocket = require("ws");
-  const ws = new WebSocket(`ws://127.0.0.1:${WS_PORT}`);
-  const inbox = [];
-  ws.on("message", (d) => {
-    try {
-      inbox.push(JSON.parse(d));
-    } catch (e) {
-      /* 非 JSON 不入信箱 */
-    }
-  });
-  await new Promise((resolve, reject) => {
-    ws.once("open", resolve);
-    ws.once("error", reject);
-  });
-
-  const visit = {
-    id: "smoke-ws-1",
-    url: SEED_WS_URL,
-    title: SEED_WS_TITLE,
-    domain: SEED_WS_DOMAIN,
-    matchedRule: SEED_WS_DOMAIN,
-    tabId: 7,
-    timestamp: Date.now(),
-    favIconUrl: "",
-    description: "",
-    ogImage: "",
-  };
-  const waitFor = async (pred, ms = 5000) => {
-    const deadline = Date.now() + ms;
-    while (!pred() && Date.now() < deadline) await sleep(25);
-  };
-
-  ws.send(JSON.stringify({ type: "addRecord", ...visit }));
-  await waitFor(() =>
-    inbox.some((m) => m.type === "recordAdded" || m.type === "recordUpdated"),
-  );
-
-  // 同一条访问再报一次（同标签页、60s 内）：库里不该出现第二条
-  ws.send(JSON.stringify({ type: "addRecord", ...visit }));
-  await sleep(300);
-
-  ws.send(JSON.stringify({ type: "exportData" }));
-  await waitFor(() => inbox.some((m) => m.type === "exportData"));
-  ws.close();
-
-  const exported = inbox.filter((m) => m.type === "exportData").pop();
-  if (!exported) return { count: 0, workId: null };
-  const mine = (exported.records || []).filter((r) => r.id === visit.id);
-  // 一次上报只该产生一条 record 广播，且带客户端读的 record 与健康度（issue #53）。
-  const recordMsgs = inbox.filter(
-    (m) => m.type === "recordAdded" || m.type === "recordUpdated",
-  );
-  return {
-    count: mine.length,
-    workId: mine[0] ? mine[0].workId : null,
-    recordBroadcasts: recordMsgs.length,
-    recordHasField: !!(recordMsgs[0] && recordMsgs[0].record),
-    recordHasHealth: !!(recordMsgs[0] && recordMsgs[0].health),
-  };
-}
-
-/**
  * 站点页通路：界面上的「打开来源」→ 应用内站点页 → 采集 → 落库。
  *
  * 站点页开的是**真页面**（本机 HTTP 伺服），采集因此跑的是页面上真实的
- * collectPage——与扩展时期注入页面的那个函数同一份（shared/page-collect.js）。
+ * collectPage——站点页注入页面与测试使用的是同一个函数（shared/page-collect.js）。
  * 库里多出来的那条访问、它归到的作品、界面上的作品行与统计，都是这条通路的产物。
  */
 async function openSitePageAndWait(win, siteUrl) {
@@ -441,30 +339,6 @@ function snapshotFiles(root) {
   }
   walk(root);
   return files;
-}
-
-/**
- * 服务端只许待在回环上：换一个地址、同一个端口，应当连不上。
- * 127.0.0.2 是同机另一个回环地址——绑 0.0.0.0 时能连上、绑 127.0.0.1 时被拒，
- * 所以它不需要网卡就能证明探针本身有效；局域网地址则是同一探针的端到端版本。
- */
-async function probeBindWidth() {
-  const net = require("net");
-  const one = (host) =>
-    new Promise((resolve) => {
-      const socket = net.connect({ port: WS_PORT, host });
-      socket.on("connect", () => {
-        socket.destroy();
-        resolve({ host, code: "CONNECTED" });
-      });
-      socket.on("error", (err) => resolve({ host, code: err.code }));
-    });
-  const alias = await one("127.0.0.2");
-  const peers = Object.values(os.networkInterfaces())
-    .flat()
-    .filter((i) => i && i.family === "IPv4" && !i.internal)
-    .map((i) => i.address);
-  return { alias, connected: (await Promise.all(peers.map(one))).filter((p) => p.code === "CONNECTED") };
 }
 
 // Runs inside the renderer: the only place where window.electronAPI is real.
@@ -654,25 +528,6 @@ async function main() {
   const probe = await win.webContents.executeJavaScript(
     pageProbe(invokeRoutes),
   );
-
-  // 扩展所走的那条通路（真实 WS → main.js 的 addRecord → store.recordVisit）。
-  // 探针自己 round-trip 过所有路由，先清零再数这次访问。
-  resetIpcCounts();
-  const wsVisit = await reportVisitOverWs();
-  // 等渲染器把这次广播画完（新作品自己出现在列表里），再读计数：
-  // 计数为零不能是因为还没画，也不能靠一个拍脑袋的 sleep。
-  let visitProbe = null;
-  const visitDeadline = Date.now() + 5000;
-  while (Date.now() < visitDeadline) {
-    visitProbe = await win.webContents.executeJavaScript(`({
-      worksText: (document.getElementById('worksContainer') || {}).textContent || '',
-      statTotal: (document.getElementById('statTotal') || {}).textContent || '',
-    })`);
-    if (visitProbe.worksText.includes(SEED_WS_TITLE)) break;
-    await sleep(50);
-  }
-  const visitIpcCalls = readIpcCounts();
-  const loopback = await probeBindWidth();
 
   // 站点页通路：界面上的「打开来源」→ 应用内站点页 → 采集 → 落库。
   const site = await startSiteServer();
@@ -866,43 +721,6 @@ async function main() {
   expect(
     /重新解析完成：未归属 \d+ → \d+ 条/.test(probe.reparseText),
     "renderer did not report reparse progress/counts: " + probe.reparseText,
-  );
-  expect(
-    wsVisit.count === 1,
-    "上报同一条访问两次后，库里出现了 " + wsVisit.count + " 条（应当只有 1 条）",
-  );
-  expect(
-    !!wsVisit.workId,
-    "WS 上报的那条访问没有归到作品（workId 为空）——一次调用要把作品归属一起做完",
-  );
-  // issue #53：一次上报一条 record 广播，且信封带客户端读的具名 record 与健康度。
-  expect(
-    wsVisit.recordBroadcasts === 1,
-    "一次上报产生了 " + wsVisit.recordBroadcasts + " 条 record 广播（应当只有 1 条）",
-  );
-  expect(wsVisit.recordHasField, "record 广播没有带 record 字段");
-  expect(wsVisit.recordHasHealth, "record 广播没有带健康度（应当随这一条广播一起）");
-  // AC：一条新访问不再触发全量重拉（stats / works:page / health / unattributed /
-  // 打开中的详情）。广播已带够数据，这次访问不该产生任何渲染器→主进程的 invoke。
-  expect(
-    visitIpcCalls.length === 0,
-    "一条访问触发了 IPC 重拉: " + JSON.stringify(visitIpcCalls),
-  );
-  expect(
-    visitProbe.worksText.includes(SEED_WS_TITLE),
-    "新访问的作品没有就地出现在作品列表里：" + visitProbe.worksText,
-  );
-  expect(
-    visitProbe.statTotal !== "",
-    "一条访问后统计没有更新：" + visitProbe.statTotal,
-  );
-  expect(
-    loopback.alias.code === "ECONNREFUSED",
-    "127.0.0.2:" + WS_PORT + " 未被拒（" + JSON.stringify(loopback.alias) + "）：探针在此平台无效，或服务端绑得比回环宽",
-  );
-  expect(
-    loopback.connected.length === 0,
-    "局域网地址也能连上 WS 服务端：" + JSON.stringify(loopback.connected),
   );
   expect(
     consoleErrors.length === 0,

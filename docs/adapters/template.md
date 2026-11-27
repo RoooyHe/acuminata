@@ -2,7 +2,7 @@
 
 一个适配器 = 一个 JSON 文件 = 一个平台（含它的镜像）。内置的放在仓库的 `adapters/` 下（范例就是 `adapters/maccms.json`），用户写的放在用户数据目录的 `adapters/` 下（Electron 的 `userData/adapters`，打包后内置目录不可写）。两个目录同一个 loader、同一种格式；同名文件以用户目录为准，可以覆盖内置的。
 
-> 加载目录、以及在程序启动时接上，是 `agent/adapters.js` 的 `loadAdapters()`；`RecordStore` 启动时读一次，写入路径与推给扩展的那一份是同一份（见下面「实现状态」）。
+> 加载目录、以及在程序启动时接上，是 `agent/adapters.js` 的 `loadAdapters()`；`RecordStore` 启动时读一次，写入路径与站点页采集共用这一份（见下面「实现状态」）。
 
 适配器由**用户**编写，Acuminata 只定义这个格式——除了内置的平台适配器：MacCMS 也是 `adapters/maccms.json` 里的一个普通文件，与用户写的**同一种格式、同一条管道**，没有特权路径（`docs/adr/0006-adapters-by-platform.md`）。
 
@@ -205,7 +205,7 @@ MacCMS 使用平台标准播放器作为挂载点，不声明域名：
 这要求 `parse` 是**已存原始字段的纯函数**：
 
 - 内置字段（`url` / `title` / `description` / `ogImage` / `favIconUrl`）今天已经存在 `records` 里 ✅
-- 扩展回传的采集结果存在 `records.pageSignature`（页面签名）与 `records.pageFields`（各适配器 collect 的字段）里 ✅
+- 站点页的采集结果存在 `records.pageSignature`（页面签名）与 `records.pageFields`（各适配器 collect 的字段）里 ✅
 
 `WorkStore.reparseWorks()` 是一次**显式操作**：清空作品的派生结果
 （`workId` / `works` / `work_keys` / `work_ambiguities`），再把每条已有访问交给与实时
@@ -236,11 +236,11 @@ MacCMS 使用平台标准播放器作为挂载点，不声明域名：
 `RecordStore` 启动时读一次，交给两处：
 
 - **写入路径**（`agent/cluster.js` 的 `identityKeysFor`）：认平台 → `parse` → 作品身份键
-- **扩展**（`init` 消息推过去）：拿它去页面上 `collect`
+- **站点页**（`site-page.js`）：拿它去页面上 `collect`
 
-detect 与 collect 要 DOM，所以住在 `shared/page-collect.js`：扩展用
-`chrome.scripting.executeScript` 把 `collectPage` 整段注入页面，桌面端测试用**同一个函数**
-跑真实页面夹具。**认平台由桌面端决定**（`detectBySignature`）——扩展只回传页面签名
+detect 与 collect 要 DOM，所以住在 `shared/page-collect.js`：站点页用
+`webContents.executeJavaScript` 把 `collectPage` 整段注入页面，桌面端测试用**同一个函数**
+跑真实页面夹具。**认平台由桌面端决定**（`detectBySignature`）。站点页回传页面签名
 （`pageSignature`）与各适配器 collect 抽到的字段（`pageFields`），判定只有一处。
 
 用户适配器已接上：`main.js` 启动时把用户数据目录的 `adapters/` 追加进加载目录（#28）；

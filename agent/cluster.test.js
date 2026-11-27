@@ -152,7 +152,7 @@ async function runTests() {
     assert(group.key === 'example.com', '规范键是组里第一个域名（来源只此一个）');
     assert(group.rules.length === 2, '同组的规则都取到（闸门与解析共用同一份）');
 
-    // 扩展报的是实际主机名 + 命中的登记域名；镜像按登记域名查
+    // 站点页报的是实际主机名 + 命中的登记域名；镜像按登记域名查
     const sub = resolveGroup(
       "example.com",
       "m.example.com",

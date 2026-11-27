@@ -18,7 +18,7 @@ const PARTITION = "persist:acuminata";
 
 /**
  * @param {Object} deps
- * @param {() => Array<Object>} deps.getAdapters 桌面端这一份适配器（与扩展时期推给扩展的是同一份）
+ * @param {() => Array<Object>} deps.getAdapters 桌面端加载的适配器
  * @param {() => Array<Object>} deps.getWatchlist 登记站点
  * @param {(incoming:Object) => Object} deps.onVisit 一条访问的来料；交给写入路径
  * @param {(file:string, message:string) => void} [deps.onAdapterWarning] 播放规则失效告警
@@ -140,7 +140,7 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
     let page = null;
     try {
       // 采集函数是自足的（shared/page-collect.js）：整段注入页面即可，
-      // 与扩展时期 chrome.scripting.executeScript 跑的是同一个函数。
+      // 同一个自足函数也在真实页面夹具测试里运行。
       const expr = `(${collectPage.toString()})(${JSON.stringify(getAdapters() || [])})`;
       page = await win.webContents.executeJavaScript(expr, true);
     } catch (e) {
@@ -152,8 +152,7 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
       title,
       domain: extractDomain(url) || site.domain,
       matchedRule: site.domain,
-      // 站点页的访问统一用 0：扩展时期的 tabId 是 Chrome 的标签页号，
-      // 两者会撞号，撞号会让「同一路径 60 秒内重报」误判成同一次访问。
+      // 站点页没有浏览器标签页号，访问统一用 0。
       tabId: 0,
       timestamp: Date.now(),
       favIconUrl: "",

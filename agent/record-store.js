@@ -37,7 +37,7 @@ class RecordStore {
     this.dbPath = dbPath;
     this.broadcast = broadcast || (() => {});
     this.db = null;
-    // 适配器只在启动时读一次：写入路径用它，推给扩展去页面采集的也是同一份。
+    // 适配器只在启动时读一次：写入路径与站点页采集共用这一份。
     this._adapters = options.adapters || loadAdapters(options.adapterDirs);
     // 健康度的计数器由访问写入路径维护，随那唯一一条访问广播一起推给客户端。
     this._adapterHealth = createAdapterHealth(this._adapters);
@@ -108,7 +108,7 @@ class RecordStore {
 
   // ── Sites ──────────────────────────────────────────────────────────────────
 
-  /** 适配器（内置与用户写在同一个目录）。写路径用它们，扩展也拿这一份去采集页面。 */
+  /** 适配器（内置与用户写在同一个目录）。写路径与站点页采集共用它们。 */
   getAdapters() {
     return this._adapters;
   }
@@ -148,7 +148,6 @@ class RecordStore {
   getRecordsPage(page, pageSize, filter) { return this._visits.getRecordsPage(page, pageSize, filter); }
   getAllRecords() { return this._visits.getAllRecords(); }
   getStats() { return this._visits.getStats(); }
-  getRuleStats() { return this._visits.getRuleStats(); }
   searchRecords(query, limit, minScore, domain) { return this._visits.searchRecords(query, limit, minScore, domain); }
   insertRecord(record, opts) { return this._visits.insertRecord(record, opts); }
   insertPinnedVisit(record) { return this._visits.insertPinnedVisit(record); }
@@ -238,7 +237,7 @@ class RecordStore {
   // only way in is these named operations; there is no SQL handle here.
   getAgentWriteStore() {
     return {
-      // agent 新建的访问走的是浏览器上报那条通道本身，不是它的副本。
+      // agent 新建的访问走访问写入路径本身，不是它的副本。
       recordVisit: (incoming) => this._visits.recordVisit(incoming),
       deleteRecords: (ids) => this._visits.deleteRecords(ids),
       updateWatchlistRegex: (d, f, t) => this._sites.updateWatchlistRegex(d, f, t),

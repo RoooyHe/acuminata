@@ -1,10 +1,8 @@
 // 站点匹配：一个地址落在哪个**登记站点**上。
 //
-// 这条规则原先住在扩展里（background.ts 的 extractDomain / matchesWatchlist）。
-// 站点页改由 Acuminata 自己承载后（ADR-0011），捕获层与数据层同处一个进程，
-// 扩展与桌面端都要用同一条规则 —— 规则只有这一处，两个调用方都从这里取。
+// 站点页与测试共用这一条规则，因此它只有这一处实现。
 //
-// 双模单源：CommonJS（扩展打包、node 测试）与浏览器全局。
+// 双模单源：CommonJS（主进程、node 测试）与浏览器全局。
 
 (function (root, factory) {
   const api = factory();

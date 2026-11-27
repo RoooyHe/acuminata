@@ -86,7 +86,7 @@ async function run() {
     matchedRule: "mysite.example",
     tabId: 1,
     timestamp: new Date(2026, 3, 1, 10).getTime(),
-    // 扩展在页面上跑 collectPage 的产物（按来源文件名分组）
+    // 站点页跑 collectPage 的产物（按来源文件名分组）
     pageSignature: ["mysite"],
     pageFields: { "user-site.json": { codeText: "ABC-123" } },
   });

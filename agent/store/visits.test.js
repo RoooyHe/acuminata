@@ -90,8 +90,6 @@ async function run() {
   );
   visits.updateRecordScore("plain-1", 9);
   assert.strictEqual(visits.getRecordById("plain-1").score, 9, "改分");
-  assert.strictEqual(visits.getRuleStats().total, 2, "站点粒度统计总数");
-  assert.strictEqual(visits.getRuleStats().stats["example.com"], 2, "站点粒度统计分站计数");
   assert.strictEqual(visits.getStats().total, 2, "概览统计总数");
   assert.strictEqual(visits.getStats().enabled, true, "统计带 enabled（来自 settings）");
   assert.strictEqual(visits.getUnattributedCount(), 1, "未归属计数");

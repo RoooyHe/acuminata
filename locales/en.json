@@ -1,6 +1,4 @@
 {
-  "header.ws.connected": "Connected",
-  "header.ws.disconnected": "Disconnected",
   "header.tracking": "Tracking",
   "header.paused": "Paused",
 

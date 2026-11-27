@@ -72,13 +72,6 @@ function showToast(msg, type = "success") {
   setTimeout(() => el.classList.remove("show"), 2500);
 }
 
-function setWsStatus(connected) {
-  const dot = document.getElementById("wsDot");
-  const txt = document.getElementById("wsStatusText");
-  dot.className = "ws-dot " + (connected ? "on" : "");
-  txt.textContent = connected ? "ONLINE" : "OFFLINE";
-}
-
 function dateGroupLabel(ts) {
   return window.sharedUtils.dateGroupLabel(ts);
 }
@@ -782,7 +775,6 @@ document.getElementById("btnSaveAiConfig").onclick = async function () {
 
 // --- 初始化与监听 ---
 async function init() {
-  setWsStatus(false);
   watchlist = await window.electronAPI.getWatchlist();
   await refreshStats();
   await loadHealth();
@@ -791,7 +783,6 @@ async function init() {
   renderWorksSiteBar();
   loadWorks(1);
   loadCandidates();
-  setWsStatus(true);
 
   const aiCfg = await window.electronAPI.getAiConfig();
   document.getElementById("inputAiProvider").value = aiCfg.provider || "ollama";

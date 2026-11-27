@@ -83,27 +83,6 @@
                 background: var(--muted);
                 color: var(--foreground);
             }
-            .ws-status {
-                margin-top: auto;
-                padding: 12px;
-                font-family: var(--font-mono);
-                font-size: 11px;
-                color: var(--muted-fg);
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                -webkit-app-region: no-drag;
-            }
-            .ws-dot {
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                background: #3f3f46;
-            }
-            .ws-dot.on {
-                background: #10b981;
-            }
-
             /* --- Content --- */
             .main-content {
                 flex: 1;
@@ -575,10 +554,6 @@
                         /></svg
                     >设置
                 </div>
-            </div>
-            <div class="ws-status">
-                <div class="ws-dot" id="wsDot"></div>
-                <span id="wsStatusText">OFFLINE</span>
             </div>
         </nav>
 

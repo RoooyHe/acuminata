@@ -52,7 +52,7 @@ const adapters = loadAdapters();
 const aiqiyi = loadPage("maccms-aiqiyi.html", "https://www.aiqiyi.ai/voddetail/237486.html");
 const mgtvtv = loadPage("maccms-mgtvtv.html", "https://www.mgtvtv.com/tv/94425/");
 
-// 扩展在页面上跑的那一次（shared/page-collect.js 的 collectPage，注入页面用的就是它）
+// 页面采集跑的那一次（shared/page-collect.js 的 collectPage，注入页面用的就是它）
 const aiqiyiPage = collectPage(adapters, aiqiyi.root);
 const mgtvtvPage = collectPage(adapters, mgtvtv.root);
 

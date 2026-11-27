@@ -1,6 +1,6 @@
 # Acuminata
 
-**Acuminata** is a privacy-first, AI Agent-driven engine for tracking and analyzing browser history. By deeply integrating an Electron desktop application with a Chrome extension, it transforms traditional "browsing logs" into "digital memory assets" that can be reasoned with, learned from, and automatically managed by intelligent agents.
+**Acuminata** is a privacy-first desktop app for tracking and analyzing visits to registered sites. It hosts site pages inside Electron, stores visits in a local database, and gives AI agents tools to search and manage that history.
 
 ## Core Features
 
@@ -27,11 +27,11 @@
 
 ## Technical Architecture
 
-The system follows a C/S (Client/Server) architecture where the Electron app serves as the absolute **Source of Truth**.
+The Electron app is the **Source of Truth** and the only capture host.
 
-* **Electron App**: Runs a WebSocket server (`127.0.0.1:8766`, loopback only) and manages a local SQLite (`sql.js`) database.
-* **Chrome Extension**: Built on the **Plasmo** framework, supporting both `Real-time WS Sync` and `Local Fallback` modes for independent operation.
-* **AI Engine**: Supports integration with OpenAI, Anthropic (Claude), and locally deployed Ollama models.
+* **Site Pages**: Open registered sites inside the app. Navigation triggers page collection and writes the visit to the local SQLite (`sql.js`) database.
+* **Desktop UI**: Lists records, searches visits, filters by site, pins records, and exports JSON.
+* **AI Engine**: Supports OpenAI, Anthropic (Claude), and locally deployed Ollama models.
 
 ---
 
@@ -50,26 +50,6 @@ npm run dev
 # npm run build
 
 ```
-
-### Browser Extension
-
-```bash
-cd extend/
-
-# Install dependencies
-npm install
-
-# Start development (supports HMR)
-npm run dev
-
-# Build production version
-npm run build
-
-```
-
-Once built, load the unpacked extension from `extend/build/chrome-mv3-prod/` in the Chrome extensions management page.
-
----
 
 ## Data Model (SQLite)
 
