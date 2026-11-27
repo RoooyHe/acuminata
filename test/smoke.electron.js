@@ -10,7 +10,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const http = require("http");
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, Menu } = require("electron");
 const { loadPreloadRoutes } = require("./preload-routes");
 
 const SEED_TITLE = "SMOKE 预置访问 α";
@@ -186,7 +186,8 @@ function startSiteServer() {
     const popupUrl = `http://localhost:${server.address().port}/popup`;
     res.end(html.replace(
       "</body>",
-      `<a id="popupLink" href="${popupUrl}" target="_blank">popup</a></body>`,
+      `<a id="popupLink" href="${popupUrl}" target="_blank">popup</a>` +
+        `<a id="nonWebLink" href="mailto:smoke@example.com">mail</a></body>`,
     ));
   });
   return new Promise((resolve) => {
@@ -287,6 +288,28 @@ async function waitForTabUrl(win, tabId, url) {
     await sleep(50);
   }
   return null;
+}
+
+async function rightClickAt(contents, selector) {
+  const target = await contents.executeJavaScript(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) throw new Error("context-menu target not found");
+    if (element.tagName !== "BODY") element.scrollIntoView({ block: "center" });
+    const rect = element.getBoundingClientRect();
+    return {
+      x: Math.round(element.tagName === "BODY" ? rect.right - 10 : rect.x + rect.width / 2),
+      y: Math.round(element.tagName === "BODY" ? rect.top + 10 : rect.y + rect.height / 2),
+      href: element.href || "",
+    };
+  })()`);
+  contents.sendInputEvent({ type: "mouseMove", x: target.x, y: target.y });
+  contents.sendInputEvent({
+    type: "mouseDown", x: target.x, y: target.y, button: "right", clickCount: 1,
+  });
+  contents.sendInputEvent({
+    type: "mouseUp", x: target.x, y: target.y, button: "right", clickCount: 1,
+  });
+  return target;
 }
 
 async function submitAddress(win, address) {
@@ -916,6 +939,62 @@ async function main() {
     pageRequests(urlBNext) > beforeTabReload &&
     JSON.stringify(isolatedAAfter) === JSON.stringify(isolatedA);
 
+  await tabBContents.executeJavaScript(`window.__tabMarker = "B"`);
+  const contextMenus = [];
+  const originalMenuPopup = Menu.prototype.popup;
+  Menu.prototype.popup = function () { contextMenus.push(this); };
+  let contextLink = { href: popupUrl };
+  let contextItem = null;
+  let contextState = null;
+  try {
+    contextLink = await rightClickAt(tabBContents, "#popupLink");
+    const menuDeadline = Date.now() + 5000;
+    while (!contextMenus.length && Date.now() < menuDeadline) await sleep(50);
+    await rightClickAt(tabBContents, "#nonWebLink");
+    await sleep(250);
+    await rightClickAt(tabBContents, "body");
+    await sleep(250);
+    contextItem = contextMenus[0] && contextMenus[0].items.find(
+      (item) => item.label === "在新标签页打开" && item.visible !== false,
+    );
+    if (contextItem) {
+      contextItem.click();
+      contextState = await waitForBrowserState(win, (state) =>
+        state.activeTabId === tabBId && state.tabs.length === 3 &&
+        state.tabs.some((tab) =>
+          tab.id !== siteContentsId && tab.id !== tabBId &&
+          tab.url === contextLink.href && !tab.isLoading));
+    }
+  } finally {
+    Menu.prototype.popup = originalMenuPopup;
+  }
+  const contextTab = contextState && contextState.tabs.find((tab) =>
+    tab.id !== siteContentsId && tab.id !== tabBId && tab.url === contextLink.href);
+  const contextView = contextTab && getSiteView(win, contextTab.id);
+  const contextMenuProbe = {
+    labels: contextMenus[0]
+      ? contextMenus[0].items.filter((item) => item.visible !== false).map((item) => item.label)
+      : [],
+    menuCount: contextMenus.length,
+    expectedUrl: contextLink.href,
+    state: contextState,
+    newTabId: contextTab && contextTab.id,
+    newTabUrl: contextView && contextView.webContents.getURL(),
+    newTabVisible: contextView && contextView.getVisible(),
+    originAlive: !tabBContents.isDestroyed() && tabBContents.getURL() === urlBNext,
+    originMarker: await tabBContents.executeJavaScript(`window.__tabMarker`),
+    otherAlive: !tabAContents.isDestroyed() && tabAContents.getURL() === site.url,
+    otherMarker: await tabAContents.executeJavaScript(`window.__tabMarker`),
+    windowCount: BrowserWindow.getAllWindows().length,
+  };
+  if (contextTab) {
+    await win.webContents.executeJavaScript(
+      `window.electronAPI.closeBrowserTab(${contextTab.id})`,
+    );
+    await waitForBrowserState(win, (state) =>
+      state.activeTabId === tabBId && state.tabs.length === 2);
+  }
+
   let nativeBeforeSettings = null;
   if (tabBContents) {
     const nativeDeadline = Date.now() + 10000;
@@ -1366,6 +1445,20 @@ async function main() {
   expect(
     !!independentHistory,
     "Back, Forward, or Reload changed the background tab instead of only the active tab",
+  );
+  expect(
+    contextMenuProbe.menuCount === 1 &&
+      JSON.stringify(contextMenuProbe.labels) === JSON.stringify(["在新标签页打开"]) &&
+      contextMenuProbe.state && contextMenuProbe.state.activeTabId === tabBId &&
+      contextMenuProbe.newTabId > 0 && contextMenuProbe.newTabId !== tabBId &&
+      contextMenuProbe.newTabId !== siteContentsId &&
+      contextMenuProbe.newTabUrl === contextMenuProbe.expectedUrl &&
+      contextMenuProbe.newTabVisible === false &&
+      contextMenuProbe.originAlive && contextMenuProbe.originMarker === "B" &&
+      contextMenuProbe.otherAlive && contextMenuProbe.otherMarker === "A" &&
+      contextMenuProbe.windowCount === 1,
+    "link context menu did not open only the exact HTTP link in a background tab: " +
+      JSON.stringify(contextMenuProbe),
   );
   expect(
     multiSettings && multiRestored && multiSettings.activeTabId === tabBId &&
