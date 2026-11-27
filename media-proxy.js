@@ -23,6 +23,8 @@
 
 const http = require("http");
 const https = require("https");
+const dns = require("dns").promises;
+const net = require("net");
 const { rewriteManifest } = require("./media-manifest");
 
 /** 应用自己的 scheme：媒体请求被重定向到这里，与站点页的请求在 URL 空间上分得开。 */
@@ -124,33 +126,122 @@ function parseProxyUrl(url) {
   };
 }
 
+/** Node 的 BlockList 会让 IPv4 规则同时覆盖 IPv4-mapped IPv6。 */
+const BLOCKED_ADDRESSES = new net.BlockList();
+for (const [network, prefix, family] of [
+  ["0.0.0.0", 8, "ipv4"],
+  ["10.0.0.0", 8, "ipv4"],
+  ["100.64.0.0", 10, "ipv4"],
+  ["127.0.0.0", 8, "ipv4"],
+  ["169.254.0.0", 16, "ipv4"],
+  ["172.16.0.0", 12, "ipv4"],
+  ["192.0.0.0", 24, "ipv4"],
+  ["192.0.2.0", 24, "ipv4"],
+  ["192.168.0.0", 16, "ipv4"],
+  ["198.18.0.0", 15, "ipv4"],
+  ["198.51.100.0", 24, "ipv4"],
+  ["203.0.113.0", 24, "ipv4"],
+  ["224.0.0.0", 4, "ipv4"],
+  ["240.0.0.0", 4, "ipv4"],
+  ["::", 128, "ipv6"],
+  ["::1", 128, "ipv6"],
+  ["fc00::", 7, "ipv6"],
+  ["fe80::", 10, "ipv6"],
+  ["ff00::", 8, "ipv6"],
+]) {
+  BLOCKED_ADDRESSES.addSubnet(network, prefix, family);
+}
+
+function isBlockedAddress(address, family) {
+  return BLOCKED_ADDRESSES.check(address, family === 6 ? "ipv6" : "ipv4");
+}
+
+async function resolveUpstream(url) {
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`Unsupported media proxy protocol: ${url.protocol}`);
+  }
+  const hostname = url.hostname.startsWith("[")
+    ? url.hostname.slice(1, -1)
+    : url.hostname;
+  const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+  if (!addresses.length) throw new Error(`No address for media proxy host: ${hostname}`);
+  return addresses;
+}
+
+async function isPrivateReferer(urlStr) {
+  try {
+    const addresses = await resolveUpstream(new URL(urlStr));
+    return addresses.every(({ address, family }) => isBlockedAddress(address, family));
+  } catch (e) {
+    return false;
+  }
+}
+
+function stripRedirectCredentials(headers) {
+  for (const key of Object.keys(headers)) {
+    if (["cookie", "referer", "origin"].includes(key.toLowerCase())) delete headers[key];
+  }
+}
+
 /**
  * 上游取回。用 Node 的网络栈（见文件头的说明）。
+ * 每一跳都重新校验并解析地址，请求固定使用这次校验选中的 DNS 结果。
  * @param {string} urlStr
- * @param {{method?: string, headers?: Object}} [opts]
- * @returns {Promise<{status: number, headers: Object, body: Buffer}>}
+ * @param {{method?: string, headers?: Object, getHeaders?: (url: string) => Promise<Object>, range?: string, allowPrivate?: boolean}} [opts]
+ * @returns {Promise<{status: number, headers: Object, body: Buffer, finalUrl: string}>}
  */
-function fetchUpstream(urlStr, opts = {}) {
-  const { method = "GET", headers = {} } = opts;
-  return new Promise((resolve, reject) => {
-    const url = new URL(urlStr);
+async function fetchUpstream(urlStr, opts = {}) {
+  const {
+    method = "GET",
+    headers = {},
+    getHeaders,
+    range,
+    allowPrivate = false,
+  } = opts;
+  const staticHeaders = { ...headers };
+  let url = new URL(urlStr);
+
+  while (true) {
+    const addresses = await resolveUpstream(url);
+    if (
+      !allowPrivate &&
+      addresses.some(({ address, family }) => isBlockedAddress(address, family))
+    ) {
+      throw new Error(`Blocked private media proxy target: ${url.hostname}`);
+    }
+    const selected = addresses[0];
+    const pinnedLookup = (_hostname, options, cb) => {
+      if (options.all) cb(null, [selected]);
+      else cb(null, selected.address, selected.family);
+    };
+    const requestHeaders = getHeaders ? await getHeaders(url.href) : { ...staticHeaders };
+    if (range) requestHeaders.range = range;
     const mod = url.protocol === "https:" ? https : http;
-    const req = mod.request(url, { method, headers }, (res) => {
-      const redirect = [301, 302, 303, 307, 308].includes(res.statusCode);
-      if (redirect && res.headers.location) {
-        res.resume();
-        resolve(fetchUpstream(new URL(res.headers.location, url).href, opts));
-        return;
-      }
-      const chunks = [];
-      res.on("data", (c) => chunks.push(c));
-      res.on("end", () =>
-        resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }),
-      );
+    const res = await new Promise((resolve, reject) => {
+      const req = mod.request(url, { method, headers: requestHeaders, lookup: pinnedLookup }, resolve);
+      req.on("error", reject);
+      req.end();
     });
-    req.on("error", reject);
-    req.end();
-  });
+
+    const redirect = [301, 302, 303, 307, 308].includes(res.statusCode);
+    if (redirect && res.headers.location) {
+      res.resume();
+      const nextUrl = new URL(res.headers.location, url);
+      if (!getHeaders && nextUrl.origin !== url.origin) {
+        stripRedirectCredentials(staticHeaders);
+      }
+      url = nextUrl;
+      continue;
+    }
+
+    const body = await new Promise((resolve, reject) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+      res.on("error", reject);
+    });
+    return { status: res.statusCode, headers: res.headers, body, finalUrl: url.href };
+  }
 }
 
 /**
@@ -220,19 +311,9 @@ function createMediaProxy({ session, getReferer }) {
     return headers;
   }
 
-  /**
-   * 取一份清单并改写。改写出来的地址带上同一个作用域：
-   * 站点页的清单指向 site 一侧，我们自己的清单指向 app 一侧。
-   * @param {string} upstreamUrl
-   * @param {string} requestOrigin
-   * @param {string} scope
-   * @returns {Promise<Response>}
-   */
-  async function servePlaylist(upstreamUrl, requestOrigin, scope) {
-    // 清单整份取：上游不接受 Range 时（206）改写不了，这里只发不带 Range 的请求。
-    const res = await fetchUpstream(upstreamUrl, { headers: await upstreamHeaders(upstreamUrl) });
+  function rewritePlaylistResponse(res, requestOrigin, scope) {
     const rewritten = rewriteManifest(res.body.toString("utf8"), {
-      baseUrl: upstreamUrl,
+      baseUrl: res.finalUrl,
       proxyUrl: (absoluteUrl, kind) => proxyUrl(absoluteUrl, kind, scope),
     });
     return new Response(rewritten, {
@@ -245,6 +326,23 @@ function createMediaProxy({ session, getReferer }) {
   }
 
   /**
+   * 取一份清单并改写。改写出来的地址带上同一个作用域：
+   * 站点页的清单指向 site 一侧，我们自己的清单指向 app 一侧。
+   * @param {string} upstreamUrl
+   * @param {string} requestOrigin
+   * @param {string} scope
+   * @returns {Promise<Response>}
+   */
+  async function servePlaylist(upstreamUrl, requestOrigin, scope) {
+    // 清单整份取：上游不接受 Range 时（206）改写不了，这里只发不带 Range 的请求。
+    const res = await fetchUpstream(upstreamUrl, {
+      getHeaders: upstreamHeaders,
+      allowPrivate: await isPrivateReferer(referer()),
+    });
+    return rewritePlaylistResponse(res, requestOrigin, scope);
+  }
+
+  /**
    * 透传一个媒体文件：Range 照发，上游的 206 与 Content-Range 照回。
    * @param {string} upstreamUrl
    * @param {string} range 渲染进程给的 Range
@@ -253,12 +351,14 @@ function createMediaProxy({ session, getReferer }) {
    * @returns {Promise<Response>}
    */
   async function serveMedia(upstreamUrl, range, requestOrigin, allowManifestFallback, scope) {
-    const headers = await upstreamHeaders(upstreamUrl);
-    if (range) headers.range = range;
-    const res = await fetchUpstream(upstreamUrl, { headers });
+    const res = await fetchUpstream(upstreamUrl, {
+      getHeaders: upstreamHeaders,
+      range,
+      allowPrivate: await isPrivateReferer(referer()),
+    });
     if (allowManifestFallback && isManifestResponse(res.headers)) {
       // 上游说是清单（地址后缀不像），照样按清单改写。
-      return servePlaylist(upstreamUrl, requestOrigin, scope);
+      return rewritePlaylistResponse(res, requestOrigin, scope);
     }
     return new Response(res.body, {
       status: res.status,
