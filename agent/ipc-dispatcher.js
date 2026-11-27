@@ -10,8 +10,55 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     fetchCandidates,
     openSitePage,
     saveWorkLocalCopy,
+    browser,
+    getShellWebContents,
   } = deps;
   const readStore = store.getAgentReadStore();
+
+  function browserRoute(event, call) {
+    const shell = getShellWebContents && getShellWebContents();
+    if (!shell || event.sender !== shell) throw new Error("Invalid browser IPC sender");
+    return call();
+  }
+
+  ipcMain.handle("browser:state:get", (event) =>
+    browserRoute(event, () => browser.getState()),
+  );
+  ipcMain.handle("browser:tab:new", (event) =>
+    browserRoute(event, () => browser.newTab()),
+  );
+  ipcMain.handle("browser:tab:activate", (event, tabId) =>
+    browserRoute(event, () => {
+      if (!Number.isInteger(tabId)) throw new Error("无效的标签页 ID");
+      return browser.activateTab(tabId);
+    }),
+  );
+  ipcMain.handle("browser:tab:close", (event, tabId) =>
+    browserRoute(event, () => {
+      if (!Number.isInteger(tabId)) throw new Error("无效的标签页 ID");
+      return browser.closeTab(tabId);
+    }),
+  );
+  ipcMain.handle("browser:navigate", (event, address) =>
+    browserRoute(event, () => {
+      if (typeof address !== "string" || !address.trim()) throw new Error("请输入网址");
+      return browser.navigate(address);
+    }),
+  );
+  ipcMain.handle("browser:action", (event, action) =>
+    browserRoute(event, () => {
+      if (!["back", "forward", "reload"].includes(action)) {
+        throw new Error("无效的浏览器操作");
+      }
+      return browser.action(action);
+    }),
+  );
+  ipcMain.handle("browser:mode:set", (event, mode) =>
+    browserRoute(event, () => {
+      if (mode !== "browser" && mode !== "settings") throw new Error("无效的浏览器模式");
+      return browser.setMode(mode);
+    }),
+  );
 
   ipcMain.handle("records:page", (_, page, pageSize, filter) =>
     store.getRecordsPage(page, pageSize, filter),

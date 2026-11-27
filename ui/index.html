@@ -2,7 +2,7 @@
 <html lang="zh-CN">
     <head>
         <meta charset="UTF-8" />
-        <title>Acuminata Agent</title>
+        <title>Acuminata</title>
         <link
             href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
             rel="stylesheet"
@@ -35,7 +35,158 @@
                 line-height: 1.4;
                 height: 100vh;
                 display: flex;
+                flex-direction: column;
                 overflow: hidden;
+            }
+
+            #browserChrome {
+                height: 88px;
+                flex: 0 0 88px;
+                background: var(--background);
+            }
+            #browserTabStrip {
+                height: 40px;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 6px 8px;
+                border-bottom: 1px solid var(--border);
+            }
+            #browserLogo {
+                width: 20px;
+                height: 20px;
+                margin-right: 4px;
+                object-fit: contain;
+                flex: 0 0 auto;
+            }
+            #browserTabs {
+                flex: 1;
+                min-width: 0;
+                display: flex;
+                gap: 4px;
+                overflow-x: auto;
+                overflow-y: hidden;
+                scrollbar-width: thin;
+            }
+            .browser-tab {
+                flex: 0 1 180px;
+                min-width: 72px;
+                max-width: 180px;
+                height: 28px;
+                display: flex;
+                align-items: center;
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                color: var(--muted-fg);
+                background: transparent;
+            }
+            .browser-tab.active {
+                color: var(--foreground);
+                border-color: var(--muted-fg);
+            }
+            .browser-tab-button {
+                flex: 1;
+                min-width: 0;
+                height: 100%;
+                padding: 0 4px 0 8px;
+                border: 0;
+                outline: none;
+                background: transparent;
+                color: inherit;
+                font: inherit;
+                font-size: 12px;
+                text-align: left;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                cursor: pointer;
+            }
+            .browser-tab-close {
+                width: 24px;
+                height: 24px;
+                flex: 0 0 24px;
+                border: 0;
+                background: transparent;
+                color: var(--muted-fg);
+                cursor: pointer;
+            }
+            .browser-tab-close:hover {
+                color: var(--foreground);
+            }
+            #browserNewTab {
+                width: 32px;
+            }
+            #browserToolbar {
+                height: 48px;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 6px 8px;
+                border-bottom: 1px solid var(--border);
+                background: var(--background);
+            }
+            .browser-button {
+                width: 32px;
+                height: 32px;
+                padding: 0;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                flex: 0 0 auto;
+            }
+            .browser-button:disabled {
+                opacity: 0.35;
+                cursor: default;
+            }
+            #browserAddressForm {
+                flex: 1;
+                min-width: 0;
+                display: flex;
+            }
+            #browserAddress {
+                width: 100%;
+                height: 32px;
+                padding: 6px 10px;
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                outline: none;
+                background: var(--background);
+                color: var(--foreground);
+                font-family: var(--font-mono);
+                font-size: 12px;
+            }
+            #browserAddress:focus {
+                border-color: var(--muted-fg);
+            }
+            #browserSettings {
+                width: auto;
+                padding: 0 10px;
+            }
+            #browserError {
+                max-width: 240px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                color: var(--danger);
+                font-size: 11px;
+            }
+            #agentWorkspace {
+                flex: 1;
+                min-height: 0;
+                display: flex;
+            }
+            #browserEmpty {
+                flex: 1;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: var(--muted-fg);
+                font-size: 13px;
+            }
+            #agentWorkspace[hidden],
+            #browserEmpty[hidden],
+            #browserError[hidden] {
+                display: none;
             }
 
             /* --- Sidebar --- */
@@ -482,6 +633,38 @@
         </style>
     </head>
     <body>
+        <header id="browserChrome">
+            <div id="browserTabStrip">
+                <img id="browserLogo" src="../build/icon.png" alt="Acuminata" />
+                <div id="browserTabs" role="tablist" aria-label="标签页"></div>
+                <button type="button" id="browserNewTab" class="btn browser-button" aria-label="新标签页" title="新标签页">+</button>
+                <button
+                    type="button"
+                    id="browserSettings"
+                    class="btn browser-button"
+                    aria-controls="agentWorkspace"
+                    aria-pressed="false"
+                >设置</button>
+            </div>
+            <div id="browserToolbar" aria-label="浏览器工具栏">
+                <button type="button" id="browserBack" class="btn browser-button" aria-label="后退" title="后退">←</button>
+                <button type="button" id="browserForward" class="btn browser-button" aria-label="前进" title="前进">→</button>
+                <button type="button" id="browserReload" class="btn browser-button" aria-label="重新载入" title="重新载入">↻</button>
+                <form id="browserAddressForm">
+                    <input
+                        type="text"
+                        id="browserAddress"
+                        aria-label="地址"
+                        placeholder="输入网址"
+                        autocomplete="off"
+                        spellcheck="false"
+                    />
+                </form>
+                <span id="browserError" role="alert" hidden></span>
+            </div>
+        </header>
+        <div id="browserEmpty">输入网址开始浏览</div>
+        <div id="agentWorkspace" hidden>
         <nav class="sidebar">
             <div class="nav-menu">
                 <div class="nav-item active" data-target="works">
@@ -1050,10 +1233,12 @@
                 </div>
             </div>
         </main>
+        </div>
         <div id="toast"></div>
         <script src="../shared/utils.js"></script>
         <script src="../shared/works-view.js"></script>
         <script src="../shared/agent-view.js"></script>
+        <script src="browser.js"></script>
         <script src="renderer.js"></script>
     </body>
 </html>

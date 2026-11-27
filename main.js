@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { RecordStore } = require("./agent/record-store");
-const { createSitePage } = require("./site-page");
+const { createBrowser } = require("./site-page");
 const { toClientMessage } = require("./agent/broadcast");
 const { ADAPTER_DIR } = require("./agent/adapters");
 const { createIPCDispatcher } = require("./agent/ipc-dispatcher");
@@ -40,6 +40,7 @@ let mainWindow;
 let sitePage;
 let store;
 let localCopyQueue = Promise.resolve();
+let browserMode = "browser";
 let aiConfig = {
   provider: "ollama",
   endpoint: "http://127.0.0.1:11434",
@@ -154,9 +155,12 @@ async function init() {
     readStore: store.getAgentReadStore(),
   });
 
+  createWindow();
+
   // 站点页：Acuminata 自己承载的站点页面（ADR-0011）。它把页面打开、把看到的字段交出来；
   // 算不算一次访问由下面这条写入路径判（判定只做一次，ADR-0002）。
-  sitePage = createSitePage({
+  sitePage = createBrowser({
+    hostWindow: mainWindow,
     getAdapters: () => store.getAdapters(),
     getWatchlist: () => store.getWatchlist(),
     onVisit: recordIncomingVisit,
@@ -166,14 +170,38 @@ async function init() {
         toClientMessage("adapterHealthUpdated", { health: store.getHealthSnapshot() }),
       );
     },
+    onStateChange: handleSitePageStateChange,
+    getMode: () => browserMode,
   });
+  handleSitePageStateChange();
 
   // IPC
   createIPCDispatcher(ipcMain, store, {
     providers: aiProviders,
     executeTool,
-    // 「打开来源」开在应用内的站点页，而不是外部浏览器（ADR-0011）。
-    openSitePage: (url) => sitePage.open(url),
+    openSitePage: (url) => {
+      sitePage.open(url);
+      return setBrowserMode("browser");
+    },
+    browser: {
+      getState: getBrowserState,
+      navigate: navigateBrowser,
+      action: browserAction,
+      setMode: setBrowserMode,
+      newTab: () => {
+        sitePage.newTab();
+        return setBrowserMode("browser");
+      },
+      activateTab: (tabId) => {
+        sitePage.activateTab(tabId);
+        return setBrowserMode("browser");
+      },
+      closeTab: (tabId) => {
+        sitePage.closeTab(tabId);
+        return getBrowserState();
+      },
+    },
+    getShellWebContents: () => mainWindow.webContents,
     saveWorkLocalCopy,
     // IPC 的 works:health 要的是适配器行本身；访问广播里带走整份快照。
     getAdapterHealth: () => store.getHealthSnapshot().adapters,
@@ -184,15 +212,49 @@ async function init() {
     // （ui/renderer.js 按 data.type === "agent_status" 判断）；修这个形状是行为变更，另开。
     broadcastAgentEvent: (event) => broadcastToRenderer({ type: event }),
   });
-
-  // Window
-  createWindow();
 }
 
 function broadcastToRenderer(data) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("data-update", data);
   }
+}
+
+function getBrowserState() {
+  return { mode: browserMode, ...sitePage.getState() };
+}
+
+function publishBrowserState() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("browser:state", getBrowserState());
+  }
+}
+
+function handleSitePageStateChange() {
+  if (sitePage) sitePage.layout();
+  publishBrowserState();
+}
+
+function setBrowserMode(mode) {
+  if (mode !== "browser" && mode !== "settings") throw new Error("无效的浏览器模式");
+  browserMode = mode;
+  sitePage.layout();
+  if (mode === "browser" && sitePage.webContents) sitePage.webContents.focus();
+  publishBrowserState();
+  return getBrowserState();
+}
+
+function navigateBrowser(address) {
+  sitePage.open(address);
+  return setBrowserMode("browser");
+}
+
+function browserAction(action) {
+  browserMode = "browser";
+  sitePage.action(action);
+  sitePage.layout();
+  publishBrowserState();
+  return getBrowserState();
 }
 
 // ── 适配器健康度 ──────────────────────────────────────────────────────────────
@@ -241,6 +303,7 @@ async function performSaveWorkLocalCopy(workId) {
   let sourceUrl = "";
   let pageUrl = "";
   if (!fs.existsSync(path.join(directory, "source.json"))) {
+    setBrowserMode("browser");
     const media = await sitePage.openForMedia(store.resolveOpenUrl(latest.url));
     sourceUrl = media.src;
     pageUrl = media.pageUrl;
@@ -388,6 +451,9 @@ function createWindow() {
 
   mainWindow.on("close", () => {
     store.saveWindowBounds(mainWindow.getBounds());
+  });
+  mainWindow.on("resize", () => {
+    if (sitePage) sitePage.layout();
   });
 
   if (process.argv.includes("--dev")) {

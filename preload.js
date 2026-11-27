@@ -9,6 +9,14 @@ const { contextBridge, ipcRenderer } = require("electron");
 //   invoke  → true: ipcRenderer.invoke, false: ipcRenderer.on (main → renderer event)
 
 const ROUTES = [
+  { name: "getBrowserState", channel: "browser:state:get", invoke: true },
+  { name: "newBrowserTab", channel: "browser:tab:new", invoke: true },
+  { name: "activateBrowserTab", channel: "browser:tab:activate", invoke: true },
+  { name: "closeBrowserTab", channel: "browser:tab:close", invoke: true },
+  { name: "navigateBrowser", channel: "browser:navigate", invoke: true },
+  { name: "browserAction", channel: "browser:action", invoke: true },
+  { name: "setBrowserMode", channel: "browser:mode:set", invoke: true },
+  { name: "onBrowserState", channel: "browser:state", invoke: false },
   // Records
   { name: "getRecordsPage", channel: "records:page", invoke: true },
   { name: "getWorksPage", channel: "works:page", invoke: true },

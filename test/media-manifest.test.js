@@ -14,7 +14,10 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { rewriteManifest } = require("../media-manifest");
-const { proxyUrl, SCHEME, SCOPE_APP } = require("../media-proxy");
+const { proxyUrl, parseProxyUrl, SCHEME, SCOPE_APP } = require("../media-proxy");
+
+const MEDIA_KEY = "manifest-test-key";
+const manifestProxyUrl = (upstream, kind) => proxyUrl(upstream, kind, SCOPE_APP, MEDIA_KEY);
 
 const FIXTURES = path.join(__dirname, "fixtures", "media");
 const PROXY = `${SCHEME}://${SCOPE_APP}/media`;
@@ -48,7 +51,7 @@ function run() {
   // 改写：去广告、地址改绝对。
   const rewritten = rewriteManifest(media, {
     baseUrl: "https://play.modujx17.com/20260928/aiXU3jsO/782kb/hls/index.m3u8",
-    proxyUrl,
+    proxyUrl: manifestProxyUrl,
   });
 
   assert.strictEqual(countTag(rewritten, "#EXTINF"), 1348, "广告分片没去掉");
@@ -72,10 +75,10 @@ function run() {
   }
   console.log("  ✓ 剩下的 1348 个分片地址都是绝对地址（指向代理）");
 
-  // 代理地址里装的是上游的绝对地址。
-  const encoded = uris[0].slice(`${PROXY}/segment/`.length);
+  const firstSegment = parseProxyUrl(new URL(uris[0]));
+  assert.strictEqual(firstSegment.mediaKey, MEDIA_KEY);
   assert.strictEqual(
-    Buffer.from(encoded, "base64url").toString("utf8"),
+    firstSegment.upstream,
     "https://bf.modujx17.com/20260928/aiXU3jsO/782kb/hls/m9J9Ig8H.ts",
     "代理地址里没装上游地址",
   );
@@ -84,14 +87,16 @@ function run() {
   // 主清单：变体地址也是绝对地址。
   const rewrittenMaster = rewriteManifest(master, {
     baseUrl: "https://play.modujx17.com/20260928/aiXU3jsO/index.m3u8",
-    proxyUrl,
+    proxyUrl: manifestProxyUrl,
   });
   const variant = rewrittenMaster
     .split(/\r?\n/)
     .find((l) => l && !l.startsWith("#"));
   assert.ok(variant.startsWith(`${PROXY}/playlist/`), "变体地址不是绝对地址");
+  const parsedVariant = parseProxyUrl(new URL(variant));
+  assert.strictEqual(parsedVariant.mediaKey, MEDIA_KEY);
   assert.strictEqual(
-    Buffer.from(variant.slice(`${PROXY}/playlist/`.length), "base64url").toString("utf8"),
+    parsedVariant.upstream,
     "https://play.modujx17.com/20260928/aiXU3jsO/782kb/hls/index.m3u8",
     "代理地址里没装上游的变体地址",
   );
@@ -100,7 +105,7 @@ function run() {
   // 纯函数：同样的输入给同样的输出，入参不动。
   const again = rewriteManifest(media, {
     baseUrl: "https://play.modujx17.com/20260928/aiXU3jsO/782kb/hls/index.m3u8",
-    proxyUrl,
+    proxyUrl: manifestProxyUrl,
   });
   assert.strictEqual(again, rewritten, "改写不是纯函数");
   assert.ok(media.includes("/20261119/scO5af3x/10137kb/hls/"), "入参被改了");
@@ -119,7 +124,7 @@ function run() {
   ].join("\n");
   const rewrittenClean = rewriteManifest(clean, {
     baseUrl: "https://cdn.example/hls/index.m3u8",
-    proxyUrl,
+    proxyUrl: manifestProxyUrl,
   });
   assert.strictEqual(countTag(rewrittenClean, "#EXTINF"), 2, "正常清单的分片被吃了");
   assert.ok(rewrittenClean.includes("#EXT-X-ENDLIST"), "正常清单的结尾被吃了");
@@ -138,13 +143,13 @@ function run() {
   ].join("\n");
   const rewrittenMasterPlaylist = rewriteManifest(masterPlaylist, {
     baseUrl: "https://cdn.example/hls/index.m3u8",
-    proxyUrl,
+    proxyUrl: manifestProxyUrl,
   });
   assert.ok(!rewrittenMasterPlaylist.includes('GROUP-ID="ad"'), "主清单里的广告轨没去掉");
   assert.ok(rewrittenMasterPlaylist.includes('GROUP-ID="audio"'), "主清单里被引用的音轨被删了");
   assert.ok(
     rewrittenMasterPlaylist.includes(
-      `URI="${proxyUrl("https://cdn.example/hls/session.key", "file")}"`,
+      `URI="${proxyUrl("https://cdn.example/hls/session.key", "file", SCOPE_APP, MEDIA_KEY)}"`,
     ),
     "主清单里的会话密钥没有按文件地址改写",
   );

@@ -26,7 +26,7 @@ const SEED_CANDIDATE_TITLE = "SMOKE 候选 ε";
 const SITE_DOMAIN = "127.0.0.1";
 const SITE_PATH = "/v/42";
 const SITE_TITLE = "《冒烟作品》";
-const TIMEOUT_MS = 60000;
+const TIMEOUT_MS = 120000;
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-smoke-"));
 const dbPath = path.join(tmpDir, "tracker.db");
@@ -183,10 +183,14 @@ function startSiteServer() {
       return;
     }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(html);
+    const popupUrl = `http://localhost:${server.address().port}/popup`;
+    res.end(html.replace(
+      "</body>",
+      `<a id="popupLink" href="${popupUrl}" target="_blank">popup</a></body>`,
+    ));
   });
   return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, () => {
       origin = `http://${SITE_DOMAIN}:${server.address().port}`;
       manifest = [
         "#EXTM3U",
@@ -225,19 +229,23 @@ function startSiteServer() {
  * collectPage——站点页注入页面与测试使用的是同一个函数（shared/page-collect.js）。
  * 库里多出来的那条访问、它归到的作品、界面上的作品行与统计，都是这条通路的产物。
  */
+function activeBrowserTab(state) {
+  return state && state.tabs.find((tab) => tab.id === state.activeTabId);
+}
+
 async function openSitePageAndWait(win, siteUrl) {
-  // 界面上的「打开来源」按钮走的就是 openUrl 这条路由。
-  await win.webContents.executeJavaScript(
-    `window.electronAPI.openUrl(${JSON.stringify(siteUrl)})`,
-  );
+  await submitAddress(win, siteUrl);
 
   const deadline = Date.now() + 15000;
   let records = [];
+  let browserState = null;
   while (Date.now() < deadline) {
-    records = await win.webContents.executeJavaScript(
-      `window.electronAPI.getRecords()`,
-    );
-    if (records.some((r) => r.url === siteUrl)) break;
+    [records, browserState] = await Promise.all([
+      win.webContents.executeJavaScript(`window.electronAPI.getRecords()`),
+      win.webContents.executeJavaScript(`window.electronAPI.getBrowserState()`),
+    ]);
+    const active = activeBrowserTab(browserState);
+    if (records.some((r) => r.url === siteUrl) && active && active.url === siteUrl) break;
     await sleep(50);
   }
 
@@ -245,26 +253,117 @@ async function openSitePageAndWait(win, siteUrl) {
   return {
     count: mine.length,
     record: mine[0] || null,
+    browserState,
   };
+}
+
+function getSiteView(mainWin, contentsId) {
+  const views = mainWin.contentView.children.filter(
+    (child) => child.webContents && child.webContents !== mainWin.webContents,
+  );
+  return contentsId
+    ? views.find((child) => child.webContents.id === contentsId) || null
+    : views[0] || null;
+}
+
+async function clickTab(win, tabId, close = false) {
+  await win.webContents.executeJavaScript(`(() => {
+    const selector = ${JSON.stringify(close ? "[data-close-tab-id]" : "[data-tab-id]")};
+    const id = ${JSON.stringify(String(tabId))};
+    const closing = ${JSON.stringify(close)};
+    const button = Array.from(document.querySelectorAll(selector))
+      .find((el) => (closing ? el.dataset.closeTabId : el.dataset.tabId) === id);
+    if (!button) throw new Error("tab control not found: " + id);
+    button.click();
+  })()`);
+}
+
+async function waitForTabUrl(win, tabId, url) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const state = await win.webContents.executeJavaScript("window.electronAPI.getBrowserState()");
+    const tab = state.tabs.find((entry) => entry.id === tabId);
+    if (tab && tab.url === url && !tab.isLoading) return state;
+    await sleep(50);
+  }
+  return null;
+}
+
+async function submitAddress(win, address) {
+  await win.webContents.executeJavaScript(`(() => {
+    const input = document.getElementById("browserAddress");
+    const form = document.getElementById("browserAddressForm");
+    if (!input || !form) throw new Error("browser address form is missing");
+    input.focus();
+    input.value = ${JSON.stringify(address)};
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    form.requestSubmit();
+  })()`);
+}
+
+async function waitForBrowserUrl(win, url) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const state = await win.webContents.executeJavaScript(
+      "window.electronAPI.getBrowserState()",
+    );
+    const active = activeBrowserTab(state);
+    if (active && active.url === url && !active.isLoading) return state;
+    await sleep(50);
+  }
+  return null;
+}
+
+async function waitForBrowserState(win, predicate) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const state = await win.webContents.executeJavaScript(
+      "window.electronAPI.getBrowserState()",
+    );
+    if (predicate(state)) return state;
+    await sleep(50);
+  }
+  return null;
+}
+
+async function clickBrowserAction(win, action, expectedUrl) {
+  await win.webContents.executeJavaScript(
+    `document.getElementById(${JSON.stringify("browser" + action[0].toUpperCase() + action.slice(1))}).click()`,
+  );
+  return waitForBrowserUrl(win, expectedUrl);
+}
+
+async function setBrowserModeAndWait(win, mode) {
+  await win.webContents.executeJavaScript(
+    `document.getElementById("browserSettings").click()`,
+  );
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const state = await win.webContents.executeJavaScript(
+      "window.electronAPI.getBrowserState()",
+    );
+    const visible = await win.webContents.executeJavaScript(
+      `!document.getElementById("agentWorkspace").hidden`,
+    );
+    if (state.mode === mode && visible === (mode === "settings")) return state;
+    await sleep(50);
+  }
+  return null;
 }
 
 /**
  * 站点页里的视频：清单经媒体代理改写后，广告段不该被拉过（issue #75）。
- * 站点页窗口是站点页自己开的那一个（地址就是站点页的地址）。
- * @param {Object} mainWin 应用自己的窗口
- * @param {string} siteUrl 站点页的地址
- * @returns {Promise<{duration: number, readyState: number, error: string}>}
  */
 async function probeSiteMedia(mainWin, siteUrl) {
-  const siteWin = BrowserWindow.getAllWindows().find(
-    (w) => w !== mainWin && w.webContents.getURL().startsWith(siteUrl),
-  );
-  if (!siteWin) return { duration: 0, readyState: 0, error: "no site window" };
+  const siteView = getSiteView(mainWin);
+  if (!siteView || !siteView.webContents.getURL().startsWith(siteUrl)) {
+    return { duration: 0, readyState: 0, error: "no embedded site view" };
+  }
   const deadline = Date.now() + 15000;
   let out = { duration: 0, readyState: 0, error: "timeout" };
   while (Date.now() < deadline) {
-    out = await siteWin.webContents.executeJavaScript(`(() => {
-      const v = document.getElementById("player");
+    out = await siteView.webContents.executeJavaScript(`(() => {
+      const v = document.querySelector("video[data-acuminata-native-player]") || document.getElementById("player");
       if (!v) return { duration: 0, readyState: 0, error: "no video element" };
       return { duration: v.duration, readyState: v.readyState, error: v.error && v.error.message };
     })()`);
@@ -458,6 +557,10 @@ function pageProbe(invokeRoutes) {
       if (typeof api[r.name] !== "function") continue;
       try {
         await api[r.name]();
+        if (r.name === "newBrowserTab") {
+          const browserState = await api.getBrowserState();
+          await api.closeBrowserTab(browserState.activeTabId);
+        }
       } catch (e) {
         const msg = String((e && e.message) || e);
         if (/No handler registered/i.test(msg)) {
@@ -506,8 +609,8 @@ async function main() {
 
   await app.whenReady();
   const win = await waitForWindow();
-  win.hide();
-  win.on("ready-to-show", () => win.hide());
+  win.show();
+  win.focus();
 
   // Acceptance: the renderer console must be free of errors (e.g. failed IPC).
   // Electron 42 passes the details object first; the positional level/message are
@@ -522,21 +625,119 @@ async function main() {
 
   await waitForLoad(win);
 
+  let startupBrowser = null;
+  const startupDeadline = Date.now() + 5000;
+  while (Date.now() < startupDeadline) {
+    startupBrowser = await win.webContents.executeJavaScript(`(async () => ({
+      state: await window.electronAPI.getBrowserState(),
+      toolbar: !!document.getElementById("browserToolbar"),
+      addressFocus: document.activeElement === document.getElementById("browserAddress"),
+      agentHidden: document.getElementById("agentWorkspace").hidden,
+      stripChildren: Array.from(document.getElementById("browserTabStrip").children).map((el) => el.id),
+      logoLoaded: document.getElementById("browserLogo").complete && document.getElementById("browserLogo").naturalWidth > 0,
+      tabListRole: document.getElementById("browserTabs").getAttribute("role"),
+      chromeHeight: document.getElementById("browserChrome").getBoundingClientRect().height,
+      stripHeight: document.getElementById("browserTabStrip").getBoundingClientRect().height,
+      toolbarRow: document.getElementById("browserBack").parentElement.id,
+      visibleWindows: 0,
+    }))()`);
+    if (startupBrowser.addressFocus) break;
+    await sleep(50);
+  }
+
   const invokeRoutes = routes
     .filter((r) => r.invoke)
     .map((r) => ({ name: r.name, channel: r.channel }));
+  await setBrowserModeAndWait(win, "settings");
   const probe = await win.webContents.executeJavaScript(
     pageProbe(invokeRoutes),
   );
 
-  // 站点页通路：界面上的「打开来源」→ 应用内站点页 → 采集 → 落库。
   const site = await startSiteServer();
   const siteVisit = await openSitePageAndWait(win, site.url);
-  // 站点页里的视频：清单经媒体代理改写，广告段不再被拉。
+  const siteView = getSiteView(win);
+  const siteContentsId = siteView ? siteView.webContents.id : 0;
+  const initialLayout = siteView ? {
+    bounds: siteView.getBounds(),
+    content: win.getContentBounds(),
+    visible: siteView.getVisible(),
+    toolbarHeight: await win.webContents.executeJavaScript(
+      `document.getElementById("browserToolbar").getBoundingClientRect().height`,
+    ),
+    tabStripHeight: await win.webContents.executeJavaScript(
+      `document.getElementById("browserTabStrip").getBoundingClientRect().height`,
+    ),
+    noPreload: await siteView.webContents.executeJavaScript(
+      `typeof window.electronAPI === "undefined"`,
+    ),
+  } : null;
+  win.setSize(1000, 720);
+  await sleep(250);
+  const resizedLayout = siteView ? {
+    bounds: siteView.getBounds(),
+    content: win.getContentBounds(),
+  } : null;
+
+  const popupUrl = `http://localhost:${site.server.address().port}/popup`;
+  const beforePopupRecords = await win.webContents.executeJavaScript(
+    "window.electronAPI.getRecords()",
+  );
+  await siteView.webContents.executeJavaScript(
+    `document.getElementById("popupLink").click()`,
+  );
+  const popupState = await waitForBrowserUrl(win, popupUrl);
+  const afterPopupRecords = await win.webContents.executeJavaScript(
+    "window.electronAPI.getRecords()",
+  );
+  const popupProbe = {
+    state: popupState,
+    sameContents: getSiteView(win) && getSiteView(win).webContents.id === siteContentsId,
+    windowCount: BrowserWindow.getAllWindows().length,
+    visibleWindowCount: BrowserWindow.getAllWindows().filter((w) => w.isVisible()).length,
+    visitsUnchanged: afterPopupRecords.length === beforePopupRecords.length,
+  };
+
+  await submitAddress(win, "file:///tmp/not-a-site.html");
+  await sleep(200);
+  const invalidAddress = {
+    state: await win.webContents.executeJavaScript("window.electronAPI.getBrowserState()"),
+    error: await win.webContents.executeJavaScript(
+      `document.getElementById("browserError").textContent`,
+    ),
+  };
+
+  const backState = await clickBrowserAction(win, "back", site.url);
+  const forwardState = await clickBrowserAction(win, "forward", popupUrl);
+  const backAgainState = await clickBrowserAction(win, "back", site.url);
+  const loadsBeforeReload = site.requested.filter((url) => url === SITE_PATH).length;
+  await win.webContents.executeJavaScript(
+    `document.getElementById("browserReload").click()`,
+  );
+  const reloadState = await waitForBrowserUrl(win, site.url);
+  const reloadDeadline = Date.now() + 5000;
+  while (
+    site.requested.filter((url) => url === SITE_PATH).length === loadsBeforeReload &&
+    Date.now() < reloadDeadline
+  ) await sleep(50);
+  const reloaded = site.requested.filter((url) => url === SITE_PATH).length > loadsBeforeReload;
+
+  await siteView.webContents.executeJavaScript(`window.__settingsMarker = "preserved"`);
+  const settingsState = await setBrowserModeAndWait(win, "settings");
+  const hiddenSite = {
+    id: siteView.webContents.id,
+    url: siteView.webContents.getURL(),
+    visible: siteView.getVisible(),
+    marker: await siteView.webContents.executeJavaScript(`window.__settingsMarker`),
+  };
+  const restoredState = await setBrowserModeAndWait(win, "browser");
+  const restoredSite = {
+    id: siteView.webContents.id,
+    url: siteView.webContents.getURL(),
+    visible: siteView.getVisible(),
+    marker: await siteView.webContents.executeJavaScript(`window.__settingsMarker`),
+  };
   const siteMedia = await probeSiteMedia(win, site.url);
   const adRequested = site.requested.includes("/media/ad-0.ts");
-  // 站点页开的是另一个窗口：冒烟测试里把它收起来，别抢用户的桌面。
-  for (const w of BrowserWindow.getAllWindows()) if (w !== win) w.hide();
   // 等渲染器把这次广播画完（作品行、统计都该就地更新）。
   const siteDeadline = Date.now() + 5000;
   let siteProbe = null;
@@ -550,6 +751,32 @@ async function main() {
   }
 
   const workId = siteVisit.record ? siteVisit.record.workId : "";
+  await setBrowserModeAndWait(win, "settings");
+  const agentSourceClicked = await win.webContents.executeJavaScript(`(async () => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const deadline = Date.now() + 10000;
+    let row = null;
+    while (!row && Date.now() < deadline) {
+      row = document.querySelector(
+        "#worksContainer [data-work-id=" + CSS.escape(${JSON.stringify(workId)}) + "]"
+      );
+      if (!row) await sleep(50);
+    }
+    if (!row) return false;
+    row.click();
+    let source = null;
+    while (!source && Date.now() < deadline) {
+      source = Array.from(document.querySelectorAll("#workSources [data-open-url]"))
+        .find((el) => decodeURIComponent(el.dataset.openUrl) === ${JSON.stringify(site.url)});
+      if (!source) await sleep(50);
+    }
+    if (!source) return false;
+    source.click();
+    return true;
+  })()`);
+  const agentSourceState = await waitForBrowserUrl(win, site.url);
+  const agentSourceSameContents = getSiteView(win) &&
+    getSiteView(win).webContents.id === siteContentsId;
   const beforeSaveRecords = workId
     ? await win.webContents.executeJavaScript("window.electronAPI.getRecords()")
     : [];
@@ -559,7 +786,27 @@ async function main() {
       )
     : { works: [] };
   const beforeSaveWork = beforeSaveWorks.works.find((work) => work.id === workId);
+  const beforeSaveHealth = await win.webContents.executeJavaScript(
+    "window.electronAPI.getWorkHealth()",
+  );
+  await setBrowserModeAndWait(win, "settings");
   const localCopyUi = await saveSiteWorkLocalCopy(win, workId);
+  const localSaveState = await win.webContents.executeJavaScript(
+    "window.electronAPI.getBrowserState()",
+  );
+  await setBrowserModeAndWait(win, "settings");
+  localCopyUi.detailText = await win.webContents.executeJavaScript(
+    `document.getElementById("workDetailMeta").textContent`,
+  );
+  localCopyUi.worksRowText = await win.webContents.executeJavaScript(`(() => {
+    const row = document.querySelector(
+      "#worksContainer [data-work-id=" + CSS.escape(${JSON.stringify(workId)}) + "]"
+    );
+    return row ? row.textContent : "";
+  })()`);
+  localCopyUi.workspaceVisible = await win.webContents.executeJavaScript(
+    `!document.getElementById("agentWorkspace").hidden`,
+  );
   const savedDetail = workId
     ? await win.webContents.executeJavaScript(
         `window.electronAPI.getWorkDetail(${JSON.stringify(workId)})`,
@@ -574,6 +821,9 @@ async function main() {
       )
     : { works: [] };
   const afterSaveWork = afterSaveWorks.works.find((work) => work.id === workId);
+  const afterSaveHealth = await win.webContents.executeJavaScript(
+    "window.electronAPI.getWorkHealth()",
+  );
   const savedDirectory = savedDetail && savedDetail.localCopy
     ? savedDetail.localCopy.directory
     : "";
@@ -586,22 +836,215 @@ async function main() {
     .map(([, body]) => body);
 
   const requestCountBeforeReuse = site.requested.length;
+  const reuseContentsId = getSiteView(win) && getSiteView(win).webContents.id;
+  const reuseUrl = getSiteView(win) && getSiteView(win).webContents.getURL();
   const reusedSave = savedDetail && savedDetail.localCopy
     ? await win.webContents.executeJavaScript(
         `window.electronAPI.saveLocalCopy(${JSON.stringify(workId)})`,
       )
     : null;
+  const afterReuseState = await win.webContents.executeJavaScript(
+    "window.electronAPI.getBrowserState()",
+  );
+  const reuseDidNotNavigate = getSiteView(win) &&
+    getSiteView(win).webContents.id === reuseContentsId &&
+    getSiteView(win).webContents.getURL() === reuseUrl &&
+    afterReuseState.mode === "settings";
   const afterReuseFiles = snapshotFiles(savedDirectory);
   const reuseFilesUnchanged =
     Object.keys(savedFiles).length === Object.keys(afterReuseFiles).length &&
     Object.entries(savedFiles).every(([name, body]) =>
       afterReuseFiles[name] && afterReuseFiles[name].equals(body));
+  const reuseRequestCountUnchanged = site.requested.length === requestCountBeforeReuse;
+
+  const tabAContents = siteView.webContents;
+  await tabAContents.executeJavaScript(`window.__tabMarker = "A"`);
+  await win.webContents.executeJavaScript(`document.getElementById("browserNewTab").click()`);
+  const newTabState = await waitForBrowserState(win, (state) =>
+    state.tabs.length === 2 && state.activeTabId !== siteContentsId && state.mode === "browser");
+  const tabBId = newTabState ? newTabState.activeTabId : 0;
+  const newTabFocused = await win.webContents.executeJavaScript(
+    `document.activeElement === document.getElementById("browserAddress")`,
+  );
+  const urlB = site.url.replace(SITE_PATH, "/v/43");
+  const secondVisit = await openSitePageAndWait(win, urlB);
+  const tabBContents = getSiteView(win, tabBId) && getSiteView(win, tabBId).webContents;
+  if (tabBContents) await tabBContents.executeJavaScript(`window.__tabMarker = "B"`);
+
+  const pageRequests = (url) => site.requested.filter((entry) => entry === new URL(url).pathname).length;
+  const switchRequestCounts = [pageRequests(site.url), pageRequests(urlB)];
+  await clickTab(win, siteContentsId);
+  const switchedA = await waitForBrowserState(win, (state) => state.activeTabId === siteContentsId);
+  const switchedAProbe = {
+    idA: tabAContents.id,
+    idB: tabBContents && tabBContents.id,
+    urlA: tabAContents.getURL(),
+    markerA: await tabAContents.executeJavaScript(`window.__tabMarker`),
+    markerB: tabBContents ? await tabBContents.executeJavaScript(`window.__tabMarker`) : null,
+    visibleA: getSiteView(win, siteContentsId) && getSiteView(win, siteContentsId).getVisible(),
+    visibleB: getSiteView(win, tabBId) && getSiteView(win, tabBId).getVisible(),
+    urlB: tabBContents && tabBContents.getURL(),
+  };
+  await clickTab(win, tabBId);
+  const switchedB = await waitForBrowserState(win, (state) => state.activeTabId === tabBId);
+  const switchRequestsUnchanged = pageRequests(site.url) === switchRequestCounts[0] &&
+    pageRequests(urlB) === switchRequestCounts[1];
+
+  const urlBNext = site.url.replace(SITE_PATH, "/v/44");
+  await submitAddress(win, urlBNext);
+  await waitForTabUrl(win, tabBId, urlBNext);
+  const isolatedA = {
+    id: tabAContents.id,
+    url: tabAContents.getURL(),
+    marker: await tabAContents.executeJavaScript(`window.__tabMarker`),
+    requests: pageRequests(site.url),
+  };
+  const tabBackState = await clickBrowserAction(win, "back", urlB);
+  const tabForwardState = await clickBrowserAction(win, "forward", urlBNext);
+  const beforeTabReload = pageRequests(urlBNext);
+  await win.webContents.executeJavaScript(`document.getElementById("browserReload").click()`);
+  const tabReloadState = await waitForBrowserUrl(win, urlBNext);
+  const tabReloadDeadline = Date.now() + 5000;
+  while (pageRequests(urlBNext) === beforeTabReload && Date.now() < tabReloadDeadline) await sleep(50);
+  const isolatedAAfter = {
+    id: tabAContents.id,
+    url: tabAContents.getURL(),
+    marker: await tabAContents.executeJavaScript(`window.__tabMarker`),
+    requests: pageRequests(site.url),
+  };
+  const independentHistory = tabBackState && tabForwardState && tabReloadState &&
+    pageRequests(urlBNext) > beforeTabReload &&
+    JSON.stringify(isolatedAAfter) === JSON.stringify(isolatedA);
+
+  let nativeBeforeSettings = null;
+  if (tabBContents) {
+    const nativeDeadline = Date.now() + 10000;
+    while (Date.now() < nativeDeadline) {
+      const native = await tabBContents.executeJavaScript(`(() => {
+        const original = document.getElementById("player");
+        if (original) {
+          original.muted = true;
+          original.play().catch(() => {});
+        }
+        const video = document.querySelector("video[data-acuminata-native-player]");
+        if (!video) return null;
+        video.muted = true;
+        video.play().catch(() => {});
+        window.__settingsNative = video;
+        return { src: video.currentSrc, time: video.currentTime };
+      })()`);
+      if (native) {
+        nativeBeforeSettings = native;
+        break;
+      }
+      await sleep(100);
+    }
+  }
+  const multiSettings = await setBrowserModeAndWait(win, "settings");
+  const allViewsHiddenInSettings = win.contentView.children
+    .filter((child) => child.webContents && child.webContents !== win.webContents)
+    .every((view) => !view.getVisible());
+  const settingsUrlBeforeReject = activeBrowserTab(multiSettings).url;
+  await submitAddress(win, "file:///tmp/rejected-in-settings.html");
+  await sleep(200);
+  const rejectedInSettings = await win.webContents.executeJavaScript(`(async () => ({
+    state: await window.electronAPI.getBrowserState(),
+    workspaceVisible: !document.getElementById("agentWorkspace").hidden,
+    pressed: document.getElementById("browserSettings").getAttribute("aria-pressed"),
+  }))()`);
+  await sleep(400);
+  const multiRestored = await setBrowserModeAndWait(win, "browser");
+  const nativeAfterSettings = tabBContents ? await tabBContents.executeJavaScript(`(() => {
+    const video = document.querySelector("video[data-acuminata-native-player]");
+    return video ? {
+      same: video === window.__settingsNative,
+      src: video.currentSrc,
+      time: video.currentTime,
+      error: video.error && video.error.message,
+    } : null;
+  })()`) : null;
+  const nativePreserved = nativeBeforeSettings && nativeAfterSettings &&
+    nativeAfterSettings.same && nativeAfterSettings.src === nativeBeforeSettings.src &&
+    nativeAfterSettings.time >= nativeBeforeSettings.time && !nativeAfterSettings.error;
+
+  await clickTab(win, siteContentsId);
+  await waitForBrowserState(win, (state) => state.activeTabId === siteContentsId);
+  const popupOriginUrl = tabAContents.getURL();
+  const popupRequestCount = pageRequests(site.url);
+  if (tabBContents) await tabBContents.executeJavaScript(`document.getElementById("popupLink").click()`);
+  const popupUrlB = `http://localhost:${site.server.address().port}/popup`;
+  const popupDeadline = Date.now() + 10000;
+  while (tabBContents && tabBContents.getURL() !== popupUrlB && Date.now() < popupDeadline) await sleep(50);
+  const popupOnlyOrigin = tabBContents && tabBContents.id === tabBId &&
+    tabBContents.getURL() === popupUrlB && tabAContents.getURL() === popupOriginUrl &&
+    pageRequests(site.url) === popupRequestCount && BrowserWindow.getAllWindows().length === 1;
+
+  await clickTab(win, tabBId);
+  await waitForBrowserState(win, (state) => state.activeTabId === tabBId);
+  const activeBeforeBackgroundClose = { id: tabBContents.id, url: tabBContents.getURL() };
+  await clickTab(win, siteContentsId, true);
+  const backgroundCloseState = await waitForBrowserState(win, (state) =>
+    !state.tabs.some((tab) => tab.id === siteContentsId) && state.activeTabId === tabBId);
+  const backgroundClosePreservedActive = backgroundCloseState && tabAContents.isDestroyed() &&
+    !getSiteView(win, siteContentsId) && tabBContents.id === activeBeforeBackgroundClose.id &&
+    tabBContents.getURL() === activeBeforeBackgroundClose.url;
+
+  await win.webContents.executeJavaScript(`document.getElementById("browserNewTab").click()`);
+  const tabCState = await waitForBrowserState(win, (state) => state.tabs.length === 2);
+  const tabCId = tabCState && tabCState.activeTabId;
+  const urlC = site.url.replace(SITE_PATH, "/v/45");
+  await openSitePageAndWait(win, urlC);
+  const tabCContents = getSiteView(win, tabCId).webContents;
+  await win.webContents.executeJavaScript(`document.getElementById("browserNewTab").click()`);
+  const tabDState = await waitForBrowserState(win, (state) => state.tabs.length === 3);
+  const tabDId = tabDState && tabDState.activeTabId;
+  const urlD = site.url.replace(SITE_PATH, "/v/46");
+  await openSitePageAndWait(win, urlD);
+  const tabDContents = getSiteView(win, tabDId).webContents;
+  await clickTab(win, tabCId);
+  await waitForBrowserState(win, (state) => state.activeTabId === tabCId);
+  await setBrowserModeAndWait(win, "settings");
+  await clickTab(win, tabCId, true);
+  const rightNeighborState = await waitForBrowserState(win, (state) =>
+    state.activeTabId === tabDId && state.mode === "settings" && !state.tabs.some((tab) => tab.id === tabCId));
+  await clickTab(win, tabDId, true);
+  const leftNeighborState = await waitForBrowserState(win, (state) =>
+    state.activeTabId === tabBId && state.mode === "settings" && !state.tabs.some((tab) => tab.id === tabDId));
+  await setBrowserModeAndWait(win, "browser");
+  await clickTab(win, tabBId, true);
+  const lastCloseState = await waitForBrowserState(win, (state) =>
+    state.tabs.length === 1 && state.tabs[0].url === "" &&
+    state.tabs[0].id !== tabBId && state.activeTabId === state.tabs[0].id);
+  const repeatedCloseState = await win.webContents.executeJavaScript(
+    `window.electronAPI.closeBrowserTab(${tabBId})`,
+  );
+  const freshBlankView = lastCloseState && getSiteView(win, lastCloseState.activeTabId);
+  const lastClosePreservedWindow = lastCloseState && tabBContents.isDestroyed() &&
+    tabCContents.isDestroyed() && tabDContents.isDestroyed() && freshBlankView &&
+    !freshBlankView.getVisible() && BrowserWindow.getAllWindows().length === 1 &&
+    BrowserWindow.getAllWindows()[0].isVisible() && repeatedCloseState.tabs.length === 1 &&
+    repeatedCloseState.activeTabId === lastCloseState.activeTabId;
+
   site.server.close();
 
   const failures = [];
   const expect = (cond, msg) => {
     if (!cond) failures.push(msg);
   };
+  expect(
+    startupBrowser && startupBrowser.toolbar && startupBrowser.addressFocus &&
+      startupBrowser.agentHidden && startupBrowser.state.mode === "browser" &&
+      startupBrowser.state.tabs.length === 1 &&
+      activeBrowserTab(startupBrowser.state) &&
+      activeBrowserTab(startupBrowser.state).url === "" &&
+      activeBrowserTab(startupBrowser.state).id === startupBrowser.state.activeTabId &&
+      JSON.stringify(startupBrowser.stripChildren) ===
+        JSON.stringify(["browserLogo", "browserTabs", "browserNewTab", "browserSettings"]) &&
+      startupBrowser.logoLoaded && startupBrowser.tabListRole === "tablist" &&
+      startupBrowser.chromeHeight === 88 && startupBrowser.stripHeight === 40 &&
+      startupBrowser.toolbarRow === "browserToolbar",
+    "startup is not the two-row tabbed browser surface: " + JSON.stringify(startupBrowser),
+  );
   expect(probe.hasAPI, "window.electronAPI is not an object");
   expect(
     probe.hasSharedUtils,
@@ -727,10 +1170,71 @@ async function main() {
     "renderer console errors: " + consoleErrors.join(" | "),
   );
 
+  expect(
+    siteVisit.browserState && siteVisit.browserState.mode === "browser" &&
+      activeBrowserTab(siteVisit.browserState) &&
+      activeBrowserTab(siteVisit.browserState).url === site.url,
+    "address submission did not publish the committed BrowserState: " +
+      JSON.stringify(siteVisit.browserState),
+  );
+  expect(
+    initialLayout && initialLayout.visible && initialLayout.noPreload &&
+      initialLayout.bounds.x === 0 && initialLayout.bounds.y === 88 &&
+      initialLayout.toolbarHeight === 48 && initialLayout.tabStripHeight === 40 &&
+      initialLayout.bounds.width === initialLayout.content.width &&
+      initialLayout.bounds.height === initialLayout.content.height - 88,
+    "site view is not laid out below the real toolbar without a preload: " +
+      JSON.stringify(initialLayout),
+  );
+  expect(
+    resizedLayout && resizedLayout.bounds.y === 88 &&
+      resizedLayout.bounds.width === resizedLayout.content.width &&
+      resizedLayout.bounds.height === resizedLayout.content.height - 88,
+    "site view bounds did not follow the window resize: " + JSON.stringify(resizedLayout),
+  );
+  expect(
+    popupProbe.state && activeBrowserTab(popupProbe.state) &&
+      !activeBrowserTab(popupProbe.state).error && popupProbe.sameContents &&
+      popupProbe.windowCount === 1 && popupProbe.visibleWindowCount === 1 &&
+      popupProbe.visitsUnchanged,
+    "popup did not reuse the one visible window, or unregistered browsing added a visit: " +
+      JSON.stringify(popupProbe),
+  );
+  expect(
+    invalidAddress.state && activeBrowserTab(invalidAddress.state) &&
+      activeBrowserTab(invalidAddress.state).url === popupUrl &&
+      invalidAddress.error.length > 0,
+    "invalid address replaced the page or produced no visible error: " +
+      JSON.stringify(invalidAddress),
+  );
+  expect(
+    backState && forwardState && backAgainState && reloadState && reloaded &&
+      activeBrowserTab(reloadState) && activeBrowserTab(reloadState).id === siteContentsId,
+    "Back, Forward, or Reload did not act on the same site contents",
+  );
+  expect(
+    settingsState && settingsState.mode === "settings" &&
+      restoredState && restoredState.mode === "browser" &&
+      hiddenSite.id === siteContentsId && restoredSite.id === siteContentsId &&
+      hiddenSite.url === site.url && restoredSite.url === site.url &&
+      hiddenSite.marker === "preserved" && restoredSite.marker === "preserved" &&
+      !hiddenSite.visible && restoredSite.visible,
+    "Settings did not preserve the same site contents and URL: " +
+      JSON.stringify({ settingsState, restoredState, hiddenSite, restoredSite }),
+  );
+  expect(
+    agentSourceClicked && agentSourceState && agentSourceState.mode === "browser" &&
+      agentSourceSameContents,
+    "Agent source opening did not return to the same browser contents",
+  );
   // 站点页：打开一个真页面 → 库里多一条访问 → 归到作品 → 界面上看得见。
   expect(
     siteVisit.count === 1,
     "站点页开出来之后，库里出现了 " + siteVisit.count + " 条访问（应当只有 1 条）",
+  );
+  expect(
+    !!siteVisit.record && siteVisit.record.tabId === siteContentsId && siteContentsId > 0,
+    "站点页访问没有持久化所属 WebContents.id",
   );
   expect(
     !!siteVisit.record && !!siteVisit.record.workId,
@@ -778,8 +1282,9 @@ async function main() {
   );
 
   expect(
-    localCopyUi.saved,
-    "点击存到本机后没有显示已存本机：" + JSON.stringify(localCopyUi),
+    localCopyUi.saved && localCopyUi.workspaceVisible && localSaveState.mode === "browser",
+    "点击存到本机后没有显示已存本机，或媒体检测没有切到浏览器：" +
+      JSON.stringify({ localCopyUi, localSaveState }),
   );
   expect(
     savedDetail && savedDetail.localCopy &&
@@ -824,17 +1329,72 @@ async function main() {
       JSON.stringify({ before: beforeSaveWork, after: afterSaveWork }),
   );
   expect(
-    reusedSave && reusedSave.reused === true,
-    "第二次保存没有复用已有副本：" + JSON.stringify(reusedSave),
+    afterSaveHealth.adapters.find((adapter) => adapter.key === "maccms.json").matched ===
+      beforeSaveHealth.adapters.find((adapter) => adapter.key === "maccms.json").matched,
+    "保存本地副本触发了一次被去重掩盖的页面采集",
+  );
+  expect(
+    reusedSave && reusedSave.reused === true && reuseDidNotNavigate,
+    "第二次保存没有复用已有副本，或复用时导航/切换了模式：" +
+      JSON.stringify({ reusedSave, reuseDidNotNavigate, afterReuseState }),
   );
   expect(
     reuseFilesUnchanged,
     "第二次保存改变了递归文件名或文件字节",
   );
   expect(
-    site.requested.length === requestCountBeforeReuse,
+    reuseRequestCountUnchanged,
     "第二次保存增加了上游请求：" +
       `${requestCountBeforeReuse} → ${site.requested.length}`,
+  );
+  expect(
+    newTabState && newTabFocused && secondVisit.count === 1 &&
+      secondVisit.record && secondVisit.record.tabId === tabBId &&
+      tabBId > 0 && tabBId !== siteContentsId && switchedAProbe.idB === tabBId,
+    "New Tab did not create an independent contents with its own persisted visit: " +
+      JSON.stringify({ newTabState, secondVisit, tabBId }),
+  );
+  expect(
+    switchedA && switchedB && switchRequestsUnchanged &&
+      switchedAProbe.markerA === "A" && switchedAProbe.markerB === "B" &&
+      switchedAProbe.visibleA === true && switchedAProbe.visibleB === false &&
+      switchedAProbe.urlB === urlB && switchedAProbe.idA === siteContentsId &&
+      switchedAProbe.idB === tabBId && switchedAProbe.urlA === site.url,
+    "switching real tab controls reloaded, lost, or exposed a background contents: " +
+      JSON.stringify({ switchedA, switchedB, switchedAProbe }),
+  );
+  expect(
+    !!independentHistory,
+    "Back, Forward, or Reload changed the background tab instead of only the active tab",
+  );
+  expect(
+    multiSettings && multiRestored && multiSettings.activeTabId === tabBId &&
+      multiRestored.activeTabId === tabBId && allViewsHiddenInSettings && nativePreserved,
+    "Settings did not preserve the active tab and its native page state: " +
+      JSON.stringify({ multiSettings, multiRestored, allViewsHiddenInSettings, nativeBeforeSettings, nativeAfterSettings }),
+  );
+  expect(
+    rejectedInSettings.state && rejectedInSettings.state.mode === "settings" &&
+      rejectedInSettings.workspaceVisible && rejectedInSettings.pressed === "true" &&
+      activeBrowserTab(rejectedInSettings.state).url === settingsUrlBeforeReject,
+    "rejected navigation desynchronized Settings mode: " + JSON.stringify(rejectedInSettings),
+  );
+  expect(
+    !!popupOnlyOrigin,
+    "popup navigated another tab or created a BrowserWindow",
+  );
+  expect(
+    !!backgroundClosePreservedActive,
+    "background close destroyed or navigated the active tab",
+  );
+  expect(
+    rightNeighborState && leftNeighborState && tabCContents.isDestroyed() && tabDContents.isDestroyed(),
+    "active close did not choose right then left, or close changed Settings mode",
+  );
+  expect(
+    !!lastClosePreservedWindow,
+    "last close did not leave one fresh blank tab in one visible app window: " +
+      JSON.stringify({ lastCloseState, repeatedCloseState }),
   );
 
   if (failures.length) {

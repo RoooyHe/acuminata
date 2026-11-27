@@ -1,3 +1,23 @@
+export type BrowserMode = "browser" | "settings"
+
+export interface BrowserTabState {
+  /** Equal to the owning WebContents.id. */
+  id: number
+  title: string
+  url: string
+  isLoading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+  error: string
+}
+
+export interface BrowserState {
+  mode: BrowserMode
+  activeTabId: number
+  /** In display order. Always contains activeTabId. */
+  tabs: BrowserTabState[]
+}
+
 export interface WatchlistEntry {
   domain: string
   label: string

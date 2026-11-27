@@ -100,29 +100,31 @@ function mediaKind(pathname) {
  * @param {string} upstream 上游的绝对地址
  * @param {"playlist"|"segment"|"file"} kind
  * @param {"site"|"app"} [scope] 谁发起的
+ * @param {string} mediaKey 所属标签页的不透明媒体键
  * @returns {string}
  */
-function proxyUrl(upstream, kind, scope = SCOPE_APP) {
+function proxyUrl(upstream, kind, scope = SCOPE_APP, mediaKey) {
   const encoded = Buffer.from(upstream, "utf8").toString("base64url");
-  return `${SCHEME}://${scope}/media/${kind}/${encoded}`;
+  return `${SCHEME}://${scope}/media/${kind}/${mediaKey}/${encoded}`;
 }
 
 /**
- * 从代理地址里取回上游地址与作用域。
+ * 从代理地址里取回上游地址、作用域与标签页媒体键。
  *
- * 代理地址是 `acuminata://<scope>/media/<kind>/<上游地址的 base64url>`：
- * scope 是 host（scheme 是 standard 的，host 有意义），kind 与上游地址在路径里。
+ * 代理地址是 `acuminata://<scope>/media/<kind>/<mediaKey>/<上游地址的 base64url>`：
+ * scope 是 host（scheme 是 standard 的，host 有意义），其余字段在路径里。
  *
  * @param {URL} url
- * @returns {{scope: string, kind: string, upstream: string}|null}
+ * @returns {{scope: string, kind: string, mediaKey: string, upstream: string}|null}
  */
 function parseProxyUrl(url) {
-  const m = url.pathname.match(/^\/media\/(playlist|segment|file)\/([^/]+)$/);
+  const m = url.pathname.match(/^\/media\/(playlist|segment|file)\/([^/]+)\/([^/]+)$/);
   if (!m) return null;
   return {
     scope: url.hostname || SCOPE_APP,
     kind: m[1],
-    upstream: Buffer.from(m[2], "base64url").toString("utf8"),
+    mediaKey: m[2],
+    upstream: Buffer.from(m[3], "base64url").toString("utf8"),
   };
 }
 
@@ -282,13 +284,13 @@ function responseHeaders(headers, origin) {
 /**
  * 建一个媒体代理，挂到站点页所在的会话上。
  *
- * @param {{session: Object, getReferer?: () => string}} opts
+ * @param {{session: Object, getMediaKey: (webContentsId: number) => string, getReferer: (mediaKey: string) => string|null}} opts
  *   session：站点页所在的会话
- *   getReferer：站点页的地址（上游要看到它，否则按盗链拒）
+ *   getMediaKey：按发起请求的 WebContents 找到所属标签页
+ *   getReferer：按媒体键找到该标签页当前的地址；未知或已关闭时返回 null
  * @returns {{handle: Function, proxyUrl: Function, redirectMedia: Function}}
  */
-function createMediaProxy({ session, getReferer }) {
-  const referer = () => (getReferer ? getReferer() : "");
+function createMediaProxy({ session, getMediaKey, getReferer }) {
 
   /**
    * 发给上游的头：站点页的 Referer 与该站点的 Cookie。
@@ -300,7 +302,7 @@ function createMediaProxy({ session, getReferer }) {
       "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Acuminata",
       "accept-encoding": "identity",
     };
-    const ref = pageUrl || referer();
+    const ref = pageUrl;
     if (ref) headers.referer = ref;
     try {
       const cookies = await session.cookies.get({ url: upstreamUrl });
@@ -313,10 +315,10 @@ function createMediaProxy({ session, getReferer }) {
     return headers;
   }
 
-  function rewritePlaylistResponse(res, requestOrigin, scope) {
+  function rewritePlaylistResponse(res, requestOrigin, scope, mediaKey) {
     const rewritten = rewriteManifest(res.body.toString("utf8"), {
       baseUrl: res.finalUrl,
-      proxyUrl: (absoluteUrl, kind) => proxyUrl(absoluteUrl, kind, scope),
+      proxyUrl: (absoluteUrl, kind) => proxyUrl(absoluteUrl, kind, scope, mediaKey),
     });
     return new Response(rewritten, {
       status: 200,
@@ -335,13 +337,13 @@ function createMediaProxy({ session, getReferer }) {
    * @param {string} scope
    * @returns {Promise<Response>}
    */
-  async function servePlaylist(upstreamUrl, requestOrigin, scope) {
+  async function servePlaylist(upstreamUrl, requestOrigin, scope, pageUrl, mediaKey) {
     // 清单整份取：上游不接受 Range 时（206）改写不了，这里只发不带 Range 的请求。
     const res = await fetchUpstream(upstreamUrl, {
-      getHeaders: upstreamHeaders,
-      allowPrivate: await isPrivateReferer(referer()),
+      getHeaders: (url) => upstreamHeaders(url, pageUrl),
+      allowPrivate: await isPrivateReferer(pageUrl),
     });
-    return rewritePlaylistResponse(res, requestOrigin, scope);
+    return rewritePlaylistResponse(res, requestOrigin, scope, mediaKey);
   }
 
   /**
@@ -352,15 +354,15 @@ function createMediaProxy({ session, getReferer }) {
    * @param {boolean} [allowManifestFallback] 上游说是清单时按清单改写
    * @returns {Promise<Response>}
    */
-  async function serveMedia(upstreamUrl, range, requestOrigin, allowManifestFallback, scope) {
+  async function serveMedia(upstreamUrl, range, requestOrigin, allowManifestFallback, scope, pageUrl, mediaKey) {
     const res = await fetchUpstream(upstreamUrl, {
-      getHeaders: upstreamHeaders,
+      getHeaders: (url) => upstreamHeaders(url, pageUrl),
       range,
-      allowPrivate: await isPrivateReferer(referer()),
+      allowPrivate: await isPrivateReferer(pageUrl),
     });
     if (allowManifestFallback && isManifestResponse(res.headers)) {
       // 上游说是清单（地址后缀不像），照样按清单改写。
-      return rewritePlaylistResponse(res, requestOrigin, scope);
+      return rewritePlaylistResponse(res, requestOrigin, scope, mediaKey);
     }
     return new Response(res.body, {
       status: res.status,
@@ -371,7 +373,7 @@ function createMediaProxy({ session, getReferer }) {
   async function fetchMedia(url, pageUrl) {
     return fetchUpstream(url, {
       getHeaders: (upstreamUrl) => upstreamHeaders(upstreamUrl, pageUrl),
-      allowPrivate: await isPrivateReferer(pageUrl || referer()),
+      allowPrivate: await isPrivateReferer(pageUrl),
     });
   }
 
@@ -385,6 +387,10 @@ function createMediaProxy({ session, getReferer }) {
     const requestOrigin = request.headers.get("origin") || "";
     const parsed = parseProxyUrl(url);
     if (!parsed) return new Response("not found", { status: 404 });
+    const pageUrl = getReferer(parsed.mediaKey);
+    if (pageUrl === null || pageUrl === undefined) {
+      return new Response("media context revoked", { status: 410 });
+    }
     if (request.method === "OPTIONS") {
       // 跨源播放要过的预检：放行方法与头，别的交给真正的请求。
       return new Response(null, {
@@ -399,7 +405,7 @@ function createMediaProxy({ session, getReferer }) {
       });
     }
     if (parsed.kind === "playlist") {
-      return servePlaylist(parsed.upstream, requestOrigin, parsed.scope);
+      return servePlaylist(parsed.upstream, requestOrigin, parsed.scope, pageUrl, parsed.mediaKey);
     }
     // 分片（可能地址后缀不像的清单）与文件（密钥、初始化段）都按字节透传。
     return serveMedia(
@@ -408,6 +414,8 @@ function createMediaProxy({ session, getReferer }) {
       requestOrigin,
       parsed.kind === "segment",
       parsed.scope,
+      pageUrl,
+      parsed.mediaKey,
     );
   }
 
@@ -429,7 +437,12 @@ function createMediaProxy({ session, getReferer }) {
       cb({});
       return;
     }
-    cb({ redirectURL: proxyUrl(url.href, kind, SCOPE_SITE) });
+    const mediaKey = getMediaKey(details.webContentsId);
+    if (!mediaKey) {
+      cb({ cancel: true });
+      return;
+    }
+    cb({ redirectURL: proxyUrl(url.href, kind, SCOPE_SITE, mediaKey) });
   }
 
   session.webRequest.onBeforeRequest({ urls: ["*://*/*"] }, redirectMedia);

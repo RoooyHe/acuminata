@@ -1,8 +1,9 @@
+const assert = require("assert");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
-const { app } = require("electron");
-const { createSitePage } = require("../site-page");
+const { app, BrowserWindow } = require("electron");
+const { createBrowser } = require("../site-page");
 const { loadAdapters } = require("../agent/adapters");
 const { registerMediaScheme, parseProxyUrl } = require("../media-proxy");
 
@@ -24,18 +25,19 @@ async function checkScenario(sitePage, requests, scenario) {
   };
   const playingBefore = requests.filter((url) => url.startsWith("/playing")).length;
   sitePage.open(`${scenario.origin}${scenario.path}`);
-  const win = sitePage.window;
+  const contents = sitePage.webContents;
+  sitePage.view.setBounds({ x: 0, y: 0, width: 1000, height: 700 });
 
   const loadDeadline = Date.now() + 20000;
   while (
     (requests.filter((url) => url.startsWith("/playing")).length === playingBefore ||
-      win.webContents.isLoading()) &&
+      contents.isLoading()) &&
     Date.now() < loadDeadline
   ) {
     await sleep(50);
   }
 
-  const after = await win.webContents.executeJavaScript(`(async () => {
+  const after = await contents.executeJavaScript(`(async () => {
     const original = document.getElementById("site-player");
     const read = () => {
       const native = document.querySelector("video[data-acuminata-native-player]");
@@ -148,7 +150,8 @@ async function checkScenario(sitePage, requests, scenario) {
   if (after.second.native) {
     const proxied = parseProxyUrl(new URL(after.second.native.src));
     expect(
-      proxied && proxied.scope === "app" && proxied.upstream === `${scenario.origin}/watch`,
+      proxied && proxied.scope === "app" && proxied.mediaKey &&
+        proxied.upstream === `${scenario.origin}/watch`,
       "native player did not use the original currentSrc through app scope",
     );
   } else {
@@ -194,6 +197,7 @@ async function main() {
             const sitePlayer = document.getElementById("site-player");
             window.beforeNativeTakeover = null;
             function recordOriginalPlayback() {
+              if (window.beforeNativeTakeover) return;
               if (!sitePlayer.paused && sitePlayer.currentTime > 0) {
                 const rect = sitePlayer.getBoundingClientRect();
                 window.beforeNativeTakeover = {
@@ -206,10 +210,10 @@ async function main() {
                   rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
                 };
                 fetch("/playing");
-              } else {
-                setTimeout(recordOriginalPlayback, 10);
+                clearInterval(playbackObserver);
               }
             }
+            const playbackObserver = setInterval(recordOriginalPlayback, 1);
             setTimeout(() => {
               document.getElementById("site-source").src = "/watch";
               sitePlayer.load();
@@ -277,11 +281,23 @@ async function main() {
 
   let adapters = [];
   let warnings = [];
-  const sitePage = createSitePage({
+  const hostWindow = new BrowserWindow({
+    show: true,
+    width: 1000,
+    height: 700,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+  });
+  const sitePage = createBrowser({
+    hostWindow,
     getAdapters: () => adapters,
     getWatchlist: () => [],
     onVisit: () => null,
     onAdapterWarning: (file, message) => warnings.push({ file, message }),
+  });
+  hostWindow.on("resize", () => {
+    if (!sitePage.view) return;
+    const { width, height } = hostWindow.getContentBounds();
+    sitePage.view.setBounds({ x: 0, y: 0, width, height });
   });
 
   const scenarios = [
@@ -327,6 +343,20 @@ async function main() {
           `in 0.40s at ${result.before.rect.width}x${result.before.rect.height}`,
       );
     }
+  }
+
+  const pending = sitePage.openForMedia(`${origin}/player.html?pending-close=1`);
+  const pendingContents = sitePage.webContents;
+  sitePage.newTab();
+  const survivingContents = sitePage.webContents;
+  sitePage.closeTab(pendingContents.id);
+  await assert.rejects(pending, /已取消/);
+  const destroyedDeadline = Date.now() + 5000;
+  while (!pendingContents.isDestroyed() && Date.now() < destroyedDeadline) await sleep(50);
+  if (pendingContents.isDestroyed() && !survivingContents.isDestroyed()) {
+    console.log("  ✓ closing a tab rejects only its pending media detection");
+  } else {
+    failures.push("close cancellation: wrong contents was destroyed");
   }
 
   server.close();
