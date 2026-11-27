@@ -1032,6 +1032,52 @@ async function runTests() {
     );
   }
 
+  console.log("\nTest: 本地副本事实按稳定身份键跨重解析保留");
+  {
+    const s = await initStore();
+    s.addWatchlist({
+      domain: "copy.example",
+      label: "副本站",
+      color: "#fff",
+      regexFilter: "/v/(?<code>[A-Z]+-\\d+)",
+      regexTarget: "url",
+    });
+    const visit = s.recordVisit({
+      id: "copy-1",
+      url: "https://copy.example/v/COPY-1",
+      title: "本地副本作品",
+      domain: "copy.example",
+      matchedRule: "copy.example",
+      tabId: 1,
+      timestamp: Date.now(),
+    });
+    const workId = visit.work.id;
+    const copy = s.markLocalCopy(workId, {
+      sourceUrl: "https://media.example/root",
+      directory: "/tmp/copy-1",
+    });
+    assert(copy.kind === "code" && copy.value === "COPY-1", "本地副本优先挂内容编号");
+    assert(s.getLocalCopy(workId).directory === "/tmp/copy-1", "RecordStore 能读回本地副本");
+    assert(s.getWorkRow(workId).hasLocalCopy === true, "作品行暴露 hasLocalCopy");
+    assert(s.getWorksPage(1, 10).works[0].hasLocalCopy === true, "作品分页暴露 hasLocalCopy");
+    assert(s.getWorkDetail(workId).localCopy.sourceUrl === "https://media.example/root", "详情返回 localCopy");
+
+    const repeated = s.markLocalCopy(workId, {
+      sourceUrl: "https://media.example/other",
+      directory: "/tmp/duplicate",
+    });
+    assert(repeated.directory === copy.directory, "重复标记返回原副本");
+    assert(s._dbAll("SELECT * FROM local_copies").length === 1, "重复标记没有第二条副本事实");
+
+    s.reparseWorks();
+    const reparsedId = s.getRecordById("copy-1").workId;
+    assert(reparsedId && reparsedId !== workId, "重解析确实替换了作品代理键");
+    assert(s.getLocalCopy(reparsedId).directory === copy.directory, "同一身份键把原副本接回新作品 id");
+    assert(s.getLocalCopy(workId) === null, "旧代理键不再冒充当前作品");
+    assert(s.getWorkRow(reparsedId).hasLocalCopy === true, "重解析后的作品行仍显示已存本机");
+    assert(s.getWorkDetail(reparsedId).localCopy.value === "COPY-1", "重解析后的详情仍返回原副本");
+  }
+
   console.log("\n✅ All RecordStore tests passed!");
   process.exit(0);
 }

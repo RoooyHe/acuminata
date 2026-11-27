@@ -9,6 +9,7 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     broadcastAgentEvent,
     fetchCandidates,
     openSitePage,
+    saveWorkLocalCopy,
   } = deps;
   const readStore = store.getAgentReadStore();
 
@@ -21,6 +22,8 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
   );
 
   ipcMain.handle("works:detail", (_, workId) => store.getWorkDetail(workId));
+
+  ipcMain.handle("works:save-local-copy", (_, workId) => saveWorkLocalCopy(workId));
 
   ipcMain.handle("works:unattributed", (_, page, pageSize, search) =>
     store.getUnattributedPage(page, pageSize, search),

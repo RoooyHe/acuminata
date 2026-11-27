@@ -58,7 +58,7 @@ function resolveUri(uri, baseUrl) {
  *
  * `#EXT-X-MEDIA` 的 TYPE 说了算：音视频轨指向一份媒体清单，字幕轨指向一个字幕文件。
  * `#EXT-X-I-FRAME-STREAM-INF` 指向一份 I 帧清单。
- * `#EXT-X-KEY`（密钥）与 `#EXT-X-MAP`（初始化段）都是文件。
+ * `#EXT-X-KEY`、`#EXT-X-SESSION-KEY`（密钥）与 `#EXT-X-MAP`（初始化段）都是文件。
  *
  * @param {string} tag
  * @returns {"playlist"|"file"|null}
@@ -69,7 +69,11 @@ function tagUriKind(tag) {
     const type = /TYPE=([A-Z-]+)/.exec(tag);
     return type && (type[1] === "AUDIO" || type[1] === "VIDEO") ? "playlist" : "file";
   }
-  if (tag.startsWith("#EXT-X-KEY:") || tag.startsWith("#EXT-X-MAP:")) return "file";
+  if (
+    tag.startsWith("#EXT-X-KEY:") ||
+    tag.startsWith("#EXT-X-SESSION-KEY:") ||
+    tag.startsWith("#EXT-X-MAP:")
+  ) return "file";
   return null;
 }
 
@@ -193,4 +197,33 @@ function rewriteTagUri(tag, opts) {
   });
 }
 
-module.exports = { rewriteManifest, resolveUri };
+/**
+ * 原样读出清单引用的地址，不去广告、不改写清单。
+ * @param {string} text 清单文本
+ * @param {string} baseUrl 清单自己的地址
+ * @returns {{url: string, kind: "playlist"|"segment"|"file"}[]}
+ */
+function manifestReferences(text, baseUrl) {
+  const refs = [];
+  let lastTag = "";
+  for (const rawLine of text.split(/\r\n|\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("#")) {
+      const kind = tagUriKind(line);
+      if (kind) {
+        for (const match of line.matchAll(/URI="([^"]*)"/g)) {
+          if (match[1]) refs.push({ url: resolveUri(match[1], baseUrl), kind });
+        }
+      }
+      lastTag = line;
+      continue;
+    }
+    const kind = lastTag.startsWith("#EXT-X-STREAM-INF:") ? "playlist" : "segment";
+    refs.push({ url: resolveUri(line, baseUrl), kind });
+    lastTag = "";
+  }
+  return refs;
+}
+
+module.exports = { rewriteManifest, manifestReferences, resolveUri };

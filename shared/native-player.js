@@ -1,16 +1,19 @@
 // 两个函数都靠 executeJavaScript 整段注入，不能引用模块作用域里的名字。
 
-function detectNativePlayer() {
+function detectNativePlayer(allowPaused = false) {
   const videos = Array.from(document.querySelectorAll("video"));
-  const index = videos.findIndex(
+  const eligible = (video) =>
+    !video.hasAttribute("data-acuminata-native-player") &&
+    !!video.currentSrc &&
+    ["http:", "https:"].includes(new URL(video.currentSrc).protocol);
+  const playing = videos.findIndex(
     (video) =>
-      !video.hasAttribute("data-acuminata-native-player") &&
-      !!video.currentSrc &&
-      ["http:", "https:"].includes(new URL(video.currentSrc).protocol) &&
-      !video.paused &&
-      !video.ended &&
-      video.currentTime > 0,
+      eligible(video) && !video.paused && !video.ended && video.currentTime > 0,
   );
+  const loaded = allowPaused
+    ? videos.findIndex((video) => eligible(video) && video.readyState >= 1)
+    : -1;
+  const index = playing >= 0 ? playing : loaded;
   return index < 0 ? null : { index, src: videos[index].currentSrc };
 }
 

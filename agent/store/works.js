@@ -21,7 +21,12 @@ const WORK_ROW_SELECT = `SELECT w.*,
         COUNT(r.id) AS visitCount,
         COALESCE(MAX(r.timestamp), 0) AS lastVisitAt,
         COUNT(DISTINCT COALESCE(r.site, r.matchedRule)) AS sourceCount,
-        COALESCE(GROUP_CONCAT(DISTINCT COALESCE(r.site, r.matchedRule)), '') AS siteRules
+        COALESCE(GROUP_CONCAT(DISTINCT COALESCE(r.site, r.matchedRule)), '') AS siteRules,
+        EXISTS (
+          SELECT 1 FROM work_keys wk
+          JOIN local_copies lc ON lc.kind = wk.kind AND lc.value = wk.value
+          WHERE wk.workId = w.id
+        ) AS hasLocalCopy
  FROM works w
  LEFT JOIN records r ON r.workId = w.id`;
 
@@ -56,6 +61,15 @@ class WorkStore {
       PRIMARY KEY (kind, value)
     )`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_wk_work ON work_keys(workId)`);
+
+    db.exec(`CREATE TABLE IF NOT EXISTS local_copies (
+      kind TEXT NOT NULL,
+      value TEXT NOT NULL,
+      sourceUrl TEXT NOT NULL,
+      directory TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      PRIMARY KEY (kind, value)
+    )`);
 
     // work_ambiguities：同一批身份键指向了不同作品时的歧义记录（ADR-0002）。
     // 判定在写入时做出并落库，不在读取时重新推断；本轮只报告，不做裁决 UI。
@@ -94,6 +108,35 @@ class WorkStore {
       "SELECT kind, value, confidence FROM work_keys WHERE workId = ? ORDER BY kind",
       [workId],
     );
+  }
+
+  getLocalCopy(workId) {
+    return this.db.get(
+      `SELECT c.kind, c.value, c.sourceUrl, c.directory, c.createdAt
+       FROM local_copies c
+       JOIN work_keys k ON k.kind = c.kind AND k.value = c.value
+       WHERE k.workId = ?
+       ORDER BY c.createdAt DESC LIMIT 1`,
+      [workId],
+    ) || null;
+  }
+
+  markLocalCopy(workId, { sourceUrl, directory }) {
+    const existing = this.getLocalCopy(workId);
+    if (existing) return existing;
+    const priority = ["code", "cover_hash", "synopsis"];
+    const key = this.getWorkKeys(workId)
+      .filter((k) =>
+        priority.includes(k.kind) && ["high", "medium"].includes(k.confidence),
+      )
+      .sort((a, b) => priority.indexOf(a.kind) - priority.indexOf(b.kind))[0];
+    if (!key) return null;
+    const copy = { kind: key.kind, value: key.value, sourceUrl, directory, createdAt: now() };
+    this.db.run(
+      "INSERT INTO local_copies (kind, value, sourceUrl, directory, createdAt) VALUES (?, ?, ?, ?, ?)",
+      [copy.kind, copy.value, copy.sourceUrl, copy.directory, copy.createdAt],
+    );
+    return copy;
   }
 
   /** 兴趣画像用：已看过的作品与它们的分数（分数即偏好的强弱）。 */
@@ -290,7 +333,7 @@ class WorkStore {
   _mapWorkRow(row) {
     const sites = row.siteRules ? row.siteRules.split(",") : [];
     delete row.siteRules;
-    return { ...row, sites };
+    return { ...row, hasLocalCopy: !!row.hasLocalCopy, sites };
   }
 
   /**
@@ -328,7 +371,7 @@ class WorkStore {
       )
       .map(({ siteRule, ...s }) => ({ ...s, matchedRule: siteRule }));
 
-    return { work, sources, visits };
+    return { work, sources, visits, localCopy: this.getLocalCopy(workId) };
   }
 
   /**

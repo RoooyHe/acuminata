@@ -13,6 +13,7 @@ const ROUTES = [
   { name: "getRecordsPage", channel: "records:page", invoke: true },
   { name: "getWorksPage", channel: "works:page", invoke: true },
   { name: "getWorkDetail", channel: "works:detail", invoke: true },
+  { name: "saveLocalCopy", channel: "works:save-local-copy", invoke: true },
   { name: "getWorkHealth", channel: "works:health", invoke: true },
   { name: "getUnattributedPage", channel: "works:unattributed", invoke: true },
   { name: "backfillWorks", channel: "works:backfill", invoke: true },

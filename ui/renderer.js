@@ -34,6 +34,7 @@ let unattributedQuery = "";
 // 作品详情状态：{ work, sources, visits }；null 表示正在看作品列表
 /** @type {Object|null} */
 let currentWork = null;
+const savingLocalCopies = new Set();
 
 // --- 基础工具函数 ---
 /**
@@ -218,7 +219,13 @@ function renderWorkDetailHeader() {
   document.getElementById("workDetailMeta").innerHTML =
     `<span class="badge">${currentWork.work.score || 0} 分</span>` +
     `<span>${currentWork.sources.length} 个来源</span>` +
-    `<span>${records.length} 次访问</span>`;
+    `<span>${records.length} 次访问</span>` +
+    (currentWork.localCopy ? `<span class="badge">已存本机</span>` : "");
+  const save = document.getElementById("btnSaveLocalCopy");
+  const saving = savingLocalCopies.has(currentWork.work.id);
+  const saved = !!currentWork.localCopy;
+  save.disabled = saving || saved;
+  save.textContent = saved ? "已存本机" : saving ? "保存中…" : "存到本机";
   const latest = document.getElementById("btnOpenLatest");
   const hasVisits = records.length > 0;
   latest.style.display = hasVisits ? "" : "none";
@@ -297,6 +304,7 @@ function renderWorks() {
             <span class="badge">${r.score} 分</span>
             <span>${r.sourceCount} 个来源</span>
             <span>${r.visitCount} 次访问</span>
+            ${r.hasLocalCopy ? `<span class="badge">已存本机</span>` : ""}
             ${r.sites
               .map(
                 (s) =>
@@ -479,6 +487,31 @@ document.getElementById("worksContainer").onclick = function (e) {
   const row = e.target.closest("[data-work-id]");
   if (row) openWorkDetail(row.dataset.workId);
 };
+
+async function saveCurrentWorkLocalCopy() {
+  if (!currentWork || currentWork.localCopy) return;
+  const workId = currentWork.work.id;
+  if (savingLocalCopies.has(workId)) return;
+  savingLocalCopies.add(workId);
+  renderWorkDetailHeader();
+  try {
+    const result = await window.electronAPI.saveLocalCopy(workId);
+    if (currentWork && currentWork.work.id === workId) {
+      currentWork.localCopy = result.localCopy;
+    }
+    works = works.map((work) =>
+      work.id === workId ? { ...work, hasLocalCopy: true } : work,
+    );
+    renderWorks();
+  } catch (e) {
+    showToast((e && e.message) || String(e), "error");
+  } finally {
+    savingLocalCopies.delete(workId);
+    if (currentWork) renderWorkDetailHeader();
+  }
+}
+
+document.getElementById("btnSaveLocalCopy").onclick = saveCurrentWorkLocalCopy;
 
 // 来源行：点击打开该来源的最近地址。
 document.getElementById("workSources").onclick = function (e) {

@@ -36,8 +36,8 @@ const WS_PORT = 8766;
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "acuminata-smoke-"));
 const dbPath = path.join(tmpDir, "tracker.db");
-// Only explicit setting wins; this keeps main.js away from the user's real DB.
 process.env.ACUMINATA_DB_PATH = dbPath;
+process.env.ACUMINATA_LOCAL_COPY_DIR = path.join(tmpDir, "local-copies");
 // 媒体代理的 scheme 要在 app ready 之前登记（Chromium 的规矩）。
 // 冒烟测试是在 ready 之后才 require main.js 的，所以这里先登记一次；
 // main.js 里那次是第二次，登记函数认得出来，直接跳过。
@@ -197,30 +197,12 @@ function startSiteServer() {
   const seg1 = fs.readFileSync(path.join(__dirname, "fixtures", "media", "segment-1.ts"));
   const requested = [];
   let origin = "";
+  let manifest = "";
   const server = http.createServer((req, res) => {
     requested.push(req.url);
     if (req.url === "/media/index.m3u8") {
       res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl" });
-      res.end(
-        [
-          "#EXTM3U",
-          "#EXT-X-VERSION:3",
-          "#EXT-X-TARGETDURATION:1",
-          "#EXT-X-MEDIA-SEQUENCE:0",
-          "#EXT-X-PLAYLIST-TYPE:VOD",
-          "#EXTINF:1.00000,",
-          `${origin}/media/segment-0.ts`,
-          "#EXT-X-DISCONTINUITY",
-          "#EXT-X-KEY:METHOD=NONE",
-          "#EXTINF:3.00000,",
-          "/media/ad-0.ts",
-          "#EXT-X-DISCONTINUITY",
-          "#EXTINF:1.00000,",
-          `${origin}/media/segment-1.ts`,
-          "#EXT-X-ENDLIST",
-          "",
-        ].join("\n"),
-      );
+      res.end(manifest);
       return;
     }
     if (req.url.startsWith("/media/segment-")) {
@@ -239,9 +221,30 @@ function startSiteServer() {
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       origin = `http://${SITE_DOMAIN}:${server.address().port}`;
+      manifest = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        "#EXT-X-TARGETDURATION:1",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:VOD",
+        "#EXTINF:1.00000,",
+        `${origin}/media/segment-0.ts`,
+        "#EXT-X-DISCONTINUITY",
+        "#EXT-X-KEY:METHOD=NONE",
+        "#EXTINF:3.00000,",
+        "/media/ad-0.ts",
+        "#EXT-X-DISCONTINUITY",
+        "#EXTINF:1.00000,",
+        `${origin}/media/segment-1.ts`,
+        "#EXT-X-ENDLIST",
+        "",
+      ].join("\n");
       resolve({
         server,
         requested,
+        manifest,
+        seg0,
+        seg1,
         url: `${origin}${SITE_PATH}`,
       });
     });
@@ -371,6 +374,73 @@ async function probeSiteMedia(mainWin, siteUrl) {
     await sleep(100);
   }
   return out;
+}
+
+async function saveSiteWorkLocalCopy(win, workId) {
+  return win.webContents.executeJavaScript(`(async () => {
+    const out = { saved: false, detailText: "", worksRowText: "", toast: "", error: "" };
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    try {
+      const back = document.getElementById("btnBackToWorks");
+      if (back) back.click();
+      const rowDeadline = Date.now() + 10000;
+      let row = null;
+      while (!row && Date.now() < rowDeadline) {
+        row = Array.from(document.querySelectorAll("#worksContainer [data-work-id]"))
+          .find((el) => el.dataset.workId === ${JSON.stringify(workId)} &&
+            el.textContent.includes(${JSON.stringify(SITE_TITLE)}));
+        if (!row) await sleep(50);
+      }
+      if (!row) throw new Error("找不到目标作品行");
+      row.click();
+
+      const detailDeadline = Date.now() + 10000;
+      let detail = document.getElementById("workDetailView");
+      while (Date.now() < detailDeadline) {
+        detail = document.getElementById("workDetailView");
+        if (detail.style.display !== "none" &&
+          document.getElementById("workDetailTitle").textContent.includes(${JSON.stringify(SITE_TITLE)})) break;
+        await sleep(50);
+      }
+      if (detail.style.display === "none") throw new Error("作品详情没有打开");
+
+      const button = document.getElementById("btnSaveLocalCopy");
+      button.click();
+      const saveDeadline = Date.now() + 35000;
+      while (Date.now() < saveDeadline) {
+        out.detailText = document.getElementById("workDetailMeta").textContent || "";
+        const savedRow = document.querySelector(
+          "#worksContainer [data-work-id=" + CSS.escape(${JSON.stringify(workId)}) + "]"
+        );
+        out.worksRowText = savedRow ? savedRow.textContent : "";
+        if (button.textContent === "已存本机" &&
+          out.detailText.includes("已存本机")) {
+          out.saved = true;
+          break;
+        }
+        await sleep(100);
+      }
+      if (!out.saved) out.error = "等待已存本机超时";
+    } catch (error) {
+      out.error = String((error && error.message) || error);
+    }
+    out.toast = (document.getElementById("toast") || {}).textContent || "";
+    return out;
+  })()`);
+}
+
+function snapshotFiles(root) {
+  const files = {};
+  if (!root || !fs.existsSync(root)) return files;
+  function walk(directory) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const filename = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(filename);
+      else files[path.relative(root, filename)] = fs.readFileSync(filename);
+    }
+  }
+  walk(root);
+  return files;
 }
 
 /**
@@ -610,7 +680,6 @@ async function main() {
   // 站点页里的视频：清单经媒体代理改写，广告段不再被拉。
   const siteMedia = await probeSiteMedia(win, site.url);
   const adRequested = site.requested.includes("/media/ad-0.ts");
-  site.server.close();
   // 站点页开的是另一个窗口：冒烟测试里把它收起来，别抢用户的桌面。
   for (const w of BrowserWindow.getAllWindows()) if (w !== win) w.hide();
   // 等渲染器把这次广播画完（作品行、统计都该就地更新）。
@@ -624,6 +693,55 @@ async function main() {
     if (siteProbe.worksText.includes(SITE_TITLE)) break;
     await sleep(50);
   }
+
+  const workId = siteVisit.record ? siteVisit.record.workId : "";
+  const beforeSaveRecords = workId
+    ? await win.webContents.executeJavaScript("window.electronAPI.getRecords()")
+    : [];
+  const beforeSaveWorks = workId
+    ? await win.webContents.executeJavaScript(
+        "window.electronAPI.getWorksPage(1, 50, {site:'all', sort:'score'})",
+      )
+    : { works: [] };
+  const beforeSaveWork = beforeSaveWorks.works.find((work) => work.id === workId);
+  const localCopyUi = await saveSiteWorkLocalCopy(win, workId);
+  const savedDetail = workId
+    ? await win.webContents.executeJavaScript(
+        `window.electronAPI.getWorkDetail(${JSON.stringify(workId)})`,
+      )
+    : null;
+  const afterSaveRecords = workId
+    ? await win.webContents.executeJavaScript("window.electronAPI.getRecords()")
+    : [];
+  const afterSaveWorks = workId
+    ? await win.webContents.executeJavaScript(
+        "window.electronAPI.getWorksPage(1, 50, {site:'all', sort:'score'})",
+      )
+    : { works: [] };
+  const afterSaveWork = afterSaveWorks.works.find((work) => work.id === workId);
+  const savedDirectory = savedDetail && savedDetail.localCopy
+    ? savedDetail.localCopy.directory
+    : "";
+  const savedFiles = snapshotFiles(savedDirectory);
+  const savedManifest = savedFiles["index.m3u8"]
+    ? savedFiles["index.m3u8"].toString("utf8")
+    : "";
+  const savedSegments = Object.entries(savedFiles)
+    .filter(([name]) => name.startsWith("segments" + path.sep) && name.endsWith(".ts"))
+    .map(([, body]) => body);
+
+  const requestCountBeforeReuse = site.requested.length;
+  const reusedSave = savedDetail && savedDetail.localCopy
+    ? await win.webContents.executeJavaScript(
+        `window.electronAPI.saveLocalCopy(${JSON.stringify(workId)})`,
+      )
+    : null;
+  const afterReuseFiles = snapshotFiles(savedDirectory);
+  const reuseFilesUnchanged =
+    Object.keys(savedFiles).length === Object.keys(afterReuseFiles).length &&
+    Object.entries(savedFiles).every(([name, body]) =>
+      afterReuseFiles[name] && afterReuseFiles[name].equals(body));
+  site.server.close();
 
   const failures = [];
   const expect = (cond, msg) => {
@@ -839,6 +957,66 @@ async function main() {
   expect(
     siteMedia.duration > 0,
     "站点页里的视频读不到时长：" + JSON.stringify(siteMedia),
+  );
+
+  expect(
+    localCopyUi.saved,
+    "点击存到本机后没有显示已存本机：" + JSON.stringify(localCopyUi),
+  );
+  expect(
+    savedDetail && savedDetail.localCopy &&
+      path.resolve(savedDetail.localCopy.directory) ===
+        path.join(tmpDir, "local-copies", workId) &&
+      fs.existsSync(savedDetail.localCopy.directory),
+    "本地副本详情没有指向临时根目录下的真实目录：" +
+      JSON.stringify(savedDetail && savedDetail.localCopy),
+  );
+  expect(
+    savedManifest === site.manifest && savedManifest.includes("/media/ad-0.ts"),
+    "归档的根清单不是服务端原文（含广告引用）：" + JSON.stringify(savedManifest),
+  );
+  expect(
+    savedSegments.some((body) => body.equals(site.seg0)) &&
+      savedSegments.some((body) => body.equals(site.seg1)),
+    "归档分片与 segment-0.ts / segment-1.ts 夹具的字节不一致",
+  );
+  expect(
+    site.requested.includes("/media/ad-0.ts"),
+    "原始归档没有请求广告段：" + JSON.stringify(site.requested),
+  );
+  expect(
+    localCopyUi.detailText.includes("已存本机"),
+    "作品详情没有显示已存本机：" + localCopyUi.detailText,
+  );
+  expect(
+    localCopyUi.worksRowText.includes(SITE_TITLE) &&
+      localCopyUi.worksRowText.includes("已存本机"),
+    "作品列表行没有显示已存本机：" + localCopyUi.worksRowText,
+  );
+  expect(
+    afterSaveRecords.length === beforeSaveRecords.length,
+    "保存本地副本改变了访问总数：" +
+      `${beforeSaveRecords.length} → ${afterSaveRecords.length}`,
+  );
+  expect(
+    beforeSaveWork && afterSaveWork &&
+      afterSaveWork.visitCount === beforeSaveWork.visitCount &&
+      afterSaveWork.hasLocalCopy === true,
+    "保存本地副本改变了访问数，或数据库行没有本地副本标记：" +
+      JSON.stringify({ before: beforeSaveWork, after: afterSaveWork }),
+  );
+  expect(
+    reusedSave && reusedSave.reused === true,
+    "第二次保存没有复用已有副本：" + JSON.stringify(reusedSave),
+  );
+  expect(
+    reuseFilesUnchanged,
+    "第二次保存改变了递归文件名或文件字节",
+  );
+  expect(
+    site.requested.length === requestCountBeforeReuse,
+    "第二次保存增加了上游请求：" +
+      `${requestCountBeforeReuse} → ${site.requested.length}`,
   );
 
   if (failures.length) {

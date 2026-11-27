@@ -52,6 +52,10 @@ assert.deepStrictEqual(
   "preload route table and dispatcher handlers must match",
 );
 assert.ok(registeredChannels.length > 0, "dispatcher registered no handlers");
+assert.ok(
+  exposedInvokeChannels.includes("works:save-local-copy"),
+  "preload does not expose the local-copy save route",
+);
 
 // ── The assertion really fails in both directions ────────────────────────────
 

@@ -130,6 +130,7 @@ function run() {
     "#EXTM3U",
     '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="中文",URI="audio.m3u8"',
     '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="ad",NAME="广告",URI="ad.m3u8"',
+    '#EXT-X-SESSION-KEY:METHOD=AES-128,URI="session.key"',
     '#EXT-X-STREAM-INF:BANDWIDTH=782000,AUDIO="audio"',
     "v.m3u8",
     "#EXT-X-ENDLIST",
@@ -141,6 +142,12 @@ function run() {
   });
   assert.ok(!rewrittenMasterPlaylist.includes('GROUP-ID="ad"'), "主清单里的广告轨没去掉");
   assert.ok(rewrittenMasterPlaylist.includes('GROUP-ID="audio"'), "主清单里被引用的音轨被删了");
+  assert.ok(
+    rewrittenMasterPlaylist.includes(
+      `URI="${proxyUrl("https://cdn.example/hls/session.key", "file")}"`,
+    ),
+    "主清单里的会话密钥没有按文件地址改写",
+  );
   console.log("  ✓ 主清单里没人引用的广告轨被去掉，被引用的音轨留着");
 
   console.log("\n✅ All media-manifest tests passed!");
