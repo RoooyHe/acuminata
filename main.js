@@ -427,6 +427,10 @@ function createWindow() {
     icon: path.join(__dirname, "build", "icon.png"),
     autoHideMenuBar: true,
     show: false,
+    ...(process.platform === "win32" ? {
+      titleBarStyle: "hidden",
+      titleBarOverlay: { color: "#000000", symbolColor: "#767d88", height: 40 },
+    } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

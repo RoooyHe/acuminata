@@ -49,8 +49,14 @@
                 display: flex;
                 align-items: center;
                 gap: 4px;
-                padding: 6px 8px;
+                padding: 6px 138px 6px 8px;
                 border-bottom: 1px solid var(--border);
+                -webkit-app-region: drag;
+            }
+            #browserLogo,
+            #browserTabs,
+            #browserTabStrip button {
+                -webkit-app-region: no-drag;
             }
             #browserLogo {
                 width: 20px;
