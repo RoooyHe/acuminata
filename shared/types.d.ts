@@ -14,6 +14,12 @@ export interface AdapterCollectRule {
   many?: boolean
 }
 
+/** 原生播放接管规则；选择器无效时整组规则降级并报告适配器告警。 */
+export interface AdapterPlayback {
+  hide?: string | string[]
+  mount?: string | string[]
+}
+
 /** 一个适配器 = 一个 JSON 文件 = 一个平台（docs/adapters/template.md）。 */
 export interface Adapter {
   name?: string
@@ -22,6 +28,7 @@ export interface Adapter {
   detect?: { pageGlobal?: string }
   collect?: AdapterCollectRule[]
   parse?: Record<string, { from: string[]; regex: string }>
+  playback?: AdapterPlayback
 }
 
 /** 采集字段按适配器文件名分组（同一个页面可能对上不止一种格式）。 */

@@ -29,7 +29,7 @@ const IDENTITY_FIELDS = ["code", "cover", "desc"];
  * @param {Array<Object>} [adapters] 已加载的适配器（`file` / `name`）；先各占一行
  */
 function createAdapterHealth(adapters = []) {
-  /** @type {Map<string, {key:string, label:string, kind:string, matched:number, dropped:number, sinceHit:number}>} */
+  /** @type {Map<string, {key:string, label:string, kind:string, matched:number, dropped:number, sinceHit:number, warning:string}>} */
   const stats = new Map();
   /** 域名 → 上次认下它的适配器。签名被改掉后仍能把失败归因（ADR-0006）。 */
   const lastAdapterByDomain = new Map();
@@ -37,7 +37,7 @@ function createAdapterHealth(adapters = []) {
   function ensure(key, label, kind) {
     let s = stats.get(key);
     if (!s) {
-      s = { key, label: label || key, kind: kind || "site", matched: 0, dropped: 0, sinceHit: 0 };
+      s = { key, label: label || key, kind: kind || "site", matched: 0, dropped: 0, sinceHit: 0, warning: "" };
       stats.set(key, s);
     }
     return s;
@@ -62,6 +62,10 @@ function createAdapterHealth(adapters = []) {
   return {
     /** 记一次适配器结果。matched=false 表示这一页被闸门丢弃或适配器没解析出东西。 */
     note,
+
+    warn(key, message) {
+      ensure(key, undefined, "adapter").warning = String(message || "");
+    },
 
     /**
      * 一条 `RecordStore.recordVisit` 的结果怎么记。
@@ -94,6 +98,7 @@ function createAdapterHealth(adapters = []) {
           matched: s.matched,
           dropped: s.dropped,
           suspect: s.sinceHit >= SUSPECT_DROPPED,
+          warning: s.warning,
         }))
         .sort((a, b) => b.dropped - a.dropped || a.key.localeCompare(b.key));
     },

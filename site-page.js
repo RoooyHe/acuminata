@@ -8,7 +8,7 @@
 // 算不算一次访问、归到哪部作品，都不在这里判——那是 store.recordVisit 的事。
 
 const { BrowserWindow, session } = require("electron");
-const { collectPage } = require("./shared/page-collect");
+const { collectPage, detectBySignature } = require("./shared/page-collect");
 const { detectNativePlayer, takeoverNativePlayer } = require("./shared/native-player");
 const { extractDomain, matchSite } = require("./shared/site-match");
 const { createMediaProxy, proxyUrl, SCOPE_APP } = require("./media-proxy");
@@ -21,8 +21,9 @@ const PARTITION = "persist:acuminata";
  * @param {() => Array<Object>} deps.getAdapters 桌面端这一份适配器（与扩展时期推给扩展的是同一份）
  * @param {() => Array<Object>} deps.getWatchlist 登记站点
  * @param {(incoming:Object) => Object} deps.onVisit 一条访问的来料；交给写入路径
+ * @param {(file:string, message:string) => void} [deps.onAdapterWarning] 播放规则失效告警
  */
-function createSitePage({ getAdapters, getWatchlist, onVisit }) {
+function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning = () => {} }) {
   const siteSession = session.fromPartition(PARTITION);
   let win = null;
   let takeoverGeneration = 0;
@@ -68,15 +69,31 @@ function createSitePage({ getAdapters, getWatchlist, onVisit }) {
   async function takeover() {
     const generation = ++takeoverGeneration;
     const detectExpr = `(${detectNativePlayer.toString()})()`;
+    let adapter = null;
+    try {
+      const adapters = getAdapters() || [];
+      const expr = `(${collectPage.toString()})([])`;
+      const page = await win.webContents.executeJavaScript(expr, true);
+      adapter = detectBySignature(page.pageSignature, adapters);
+    } catch (e) {
+      adapter = null;
+    }
     while (generation === takeoverGeneration && win && !win.isDestroyed()) {
       const media = await win.webContents.executeJavaScript(detectExpr, true);
       if (media && media.src) {
         const request = {
           ...media,
           nativeSrc: proxyUrl(media.src, "segment", SCOPE_APP),
+          playback: adapter && adapter.playback,
         };
         const expr = `(${takeoverNativePlayer.toString()})(${JSON.stringify(request)})`;
-        if (await win.webContents.executeJavaScript(expr, true)) return true;
+        const result = await win.webContents.executeJavaScript(expr, true);
+        if (result && result.ok) {
+          if (result.warning && adapter && adapter.file) {
+            onAdapterWarning(adapter.file, result.warning);
+          }
+          return true;
+        }
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }

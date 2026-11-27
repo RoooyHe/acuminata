@@ -1,7 +1,11 @@
 {
-  "_note": "按 docs/adapters/template.md 写成，用真实抓下来的页验证（test/fixtures/maccms-*.html）。平台级适配器：只依赖签名、URL/属性模式与 meta，不锚 class —— 两个站的 class 完全不同。列表页的 item/封面取法同各自的夹具页。",
+  "_note": "按 docs/adapters/template.md 写成，用真实抓下来的页验证（test/fixtures/maccms-*.html）。平台级适配器：采集只依赖签名、URL/属性模式与 meta，不锚 class；播放接管锚在 MacCMS 标准播放器。列表页的 item/封面取法同各自的夹具页。",
   "name": "MacCMS",
   "detect": { "pageGlobal": "maccms" },
+  "playback": {
+    "mount": ["#MacPlayer", ".MacPlayer"],
+    "hide": [".dplayer", ".artplayer", "#MacPlayer > iframe", ".MacPlayer > iframe"]
+  },
   "collect": [
     { "field": "keywords", "selector": "meta[name='keywords']", "attr": "content" },
     {

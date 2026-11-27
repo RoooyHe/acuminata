@@ -159,6 +159,7 @@ class RecordStore {
   getUnattributedPage(page, pageSize, search) { return this._visits.getUnattributedPage(page, pageSize, search); }
   getUnattributedCount() { return this._visits.getUnattributedCount(); }
   getHealthSnapshot() { return this._visits.getHealth(); }
+  reportAdapterWarning(file, message) { return this._adapterHealth.warn(file, message); }
   extractHighValueRecords() { return this._visits.extractHighValueRecords(); }
   buildDeleteReflectionPrompt(records) { return this._visits.buildDeleteReflectionPrompt(records); }
   buildRejectReflectionPrompt(rec) { return this._visits.buildRejectReflectionPrompt(rec); }

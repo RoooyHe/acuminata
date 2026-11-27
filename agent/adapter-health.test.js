@@ -32,6 +32,15 @@ const m = h.snapshot().find((s) => s.key === "maccms.json");
 check(m.matched === 1 && m.dropped === 1, "命中与丢弃分别计数");
 check(m.suspect === false, "命中过一次的适配器不标为失效");
 
+const warned = createAdapterHealth([{ file: "warn.json", name: "告警适配器" }]);
+warned.warn("warn.json", "播放规则选择器无效: [");
+const warnedRow = warned.snapshot()[0];
+check(warnedRow.warning === "播放规则选择器无效: [", "播放规则告警出现在适配器健康行");
+check(
+  warnedRow.matched === 0 && warnedRow.dropped === 0 && warnedRow.suspect === false,
+  "播放规则告警不篡改命中、丢弃与疑似失效状态",
+);
+
 // 未见命中且持续丢弃的适配器 → 疑似失效
 for (let i = 0; i < SUSPECT_DROPPED; i++) h.note("user-site.json", false);
 const u = h.snapshot().find((s) => s.key === "user-site.json");

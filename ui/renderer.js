@@ -22,7 +22,7 @@ let worksSite = "all";
 const worksPageSize = 50;
 
 // 未归属访问 + 适配器健康度
-/** @type {{ unattributedCount: number, adapters: Array<{key:string,label:string,kind:string,matched:number,dropped:number,suspect:boolean}> }|null} */
+/** @type {{ unattributedCount: number, adapters: Array<{key:string,label:string,kind:string,matched:number,dropped:number,suspect:boolean,warning:string}> }|null} */
 let health = null;
 let worksView = "works";
 /** @type {Array<Object>} */
@@ -367,6 +367,7 @@ function renderAdapterHealth() {
         <span style="font-family:var(--font-mono); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(a.label)}</span>
         ${a.kind === "site" ? '<span style="font-size:10px; color:var(--muted-fg)">站点</span>' : ""}
         ${a.suspect ? '<span class="badge" style="border-color:var(--warning); color:var(--warning)">疑似失效</span>' : ""}
+        ${a.warning ? `<span class="badge" style="border-color:var(--warning); color:var(--warning)" title="${escapeHtml(a.warning)}">播放规则告警</span>` : ""}
       </div>
       <span style="font-family:var(--font-mono); font-size:11px; color:var(--muted-fg); white-space:nowrap">命中 ${a.matched} / 丢弃 ${a.dropped}</span>
     </div>`,

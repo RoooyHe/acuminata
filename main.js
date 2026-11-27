@@ -161,6 +161,12 @@ async function init() {
     getAdapters: () => store.getAdapters(),
     getWatchlist: () => store.getWatchlist(),
     onVisit: recordIncomingVisit,
+    onAdapterWarning: (file, message) => {
+      store.reportAdapterWarning(file, message);
+      broadcastToExtensions(
+        toClientMessage("adapterHealthUpdated", { health: store.getHealthSnapshot() }),
+      );
+    },
   });
 
   // IPC
