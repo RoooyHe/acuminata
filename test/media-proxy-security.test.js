@@ -5,6 +5,8 @@ const {
   fetchUpstream,
   parseProxyUrl,
   proxyUrl,
+  SCOPE_APP,
+  SCOPE_SITE,
 } = require("../media-proxy");
 
 const tests = [];
@@ -45,15 +47,18 @@ function fakeSession(cookieJar = {}) {
   };
 }
 
+const MEDIA_KEY = "test-media-key";
+
 function mediaProxy(referer, cookieJar) {
   return createMediaProxy({
     session: fakeSession(cookieJar),
-    getReferer: () => referer,
+    getMediaKey: (webContentsId) => webContentsId === 1 ? MEDIA_KEY : "",
+    getReferer: (mediaKey) => mediaKey === MEDIA_KEY ? referer : null,
   });
 }
 
-function mediaRequest(upstream, kind = "file", headers) {
-  return new Request(proxyUrl(upstream, kind), { headers });
+function mediaRequest(upstream, kind = "file", headers, mediaKey = MEDIA_KEY) {
+  return new Request(proxyUrl(upstream, kind, SCOPE_APP, mediaKey), { headers });
 }
 
 function playlistSegment(body) {
@@ -62,6 +67,51 @@ function playlistSegment(body) {
     .find((line) => line && !line.startsWith("#"));
   return parseProxyUrl(new URL(uri)).upstream;
 }
+
+test("unknown media keys are rejected before DNS, including preflight", async () => {
+  let hits = 0;
+  const server = await listen((req, res) => {
+    hits += 1;
+    res.end("must not be fetched");
+  });
+  try {
+    const proxy = mediaProxy(`${origin(server)}/player.html`);
+    for (const method of ["GET", "OPTIONS"]) {
+      const request = new Request(
+        proxyUrl(`${origin(server)}/movie.mp4`, "file", SCOPE_APP, "revoked-key"),
+        { method },
+      );
+      const response = await proxy.handle(request);
+      assert.strictEqual(response.status, 410);
+    }
+    assert.strictEqual(hits, 0);
+  } finally {
+    await close(server);
+  }
+});
+
+test("redirectMedia routes by requester contents and cancels unknown requesters", async () => {
+  const keys = new Map([[11, "key-a"], [22, "key-b"]]);
+  const proxy = createMediaProxy({
+    session: fakeSession(),
+    getMediaKey: (webContentsId) => keys.get(webContentsId) || "",
+    getReferer: (mediaKey) => mediaKey ? "https://example.com/player" : null,
+  });
+  for (const [webContentsId, mediaKey] of keys) {
+    const result = await new Promise((resolve) => proxy.redirectMedia({
+      url: "https://cdn.example/media/index.m3u8",
+      webContentsId,
+    }, resolve));
+    const parsed = parseProxyUrl(new URL(result.redirectURL));
+    assert.strictEqual(parsed.scope, SCOPE_SITE);
+    assert.strictEqual(parsed.mediaKey, mediaKey);
+  }
+  const cancelled = await new Promise((resolve) => proxy.redirectMedia({
+    url: "https://cdn.example/media/index.m3u8",
+    webContentsId: 999,
+  }, resolve));
+  assert.strictEqual(cancelled.cancel, true);
+});
 
 test("a public site Referer cannot fetch a literal loopback target", async () => {
   let hits = 0;

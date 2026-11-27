@@ -1,159 +1,194 @@
-// 站点页：Acuminata 自己承载的站点页面（ADR-0011）。
-//
-// 一个窗口，复用；每次导航后抽字段、按同一条写入路径落库（ADR-0002：判定只做一次）。
-// 站点页跑在自己的持久化 partition 里：登录态因此跨重启存活，
-// 媒体资源的协议层改写（ADR-0012）也挂在这个 session 上，不碰应用自己的界面 session。
-//
-//
-// 算不算一次访问、归到哪部作品，都不在这里判——那是 store.recordVisit 的事。
-
-const { BrowserWindow, session } = require("electron");
+const { WebContentsView, session } = require("electron");
+const { randomUUID } = require("crypto");
 const { collectPage, detectBySignature } = require("./shared/page-collect");
 const { detectNativePlayer, takeoverNativePlayer } = require("./shared/native-player");
 const { extractDomain, matchSite } = require("./shared/site-match");
 const { createMediaProxy, proxyUrl, SCOPE_APP } = require("./media-proxy");
 
-// 持久化 partition：登录态跨重启存活（cookie 落盘）。
 const PARTITION = "persist:acuminata";
+const BROWSER_CHROME_HEIGHT = 88;
+
+function normalizeAddress(input) {
+  if (typeof input !== "string" || !input.trim()) throw new Error("请输入网址");
+  let address = input.trim();
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(address)) {
+    const bareHostWithPort = /^[^/:?#]+:\d+(?:[/?#]|$)/.test(address);
+    if (/^[a-z][a-z\d+.-]*:/i.test(address) && !bareHostWithPort) {
+      throw new Error("只支持 HTTP 或 HTTPS 地址");
+    }
+    address = `https://${address}`;
+  }
+  let url;
+  try {
+    url = new URL(address);
+  } catch {
+    throw new Error("网址格式无效");
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) {
+    throw new Error("只支持 HTTP 或 HTTPS 地址");
+  }
+  return url.href;
+}
+
+function isWebAddress(url) {
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * @param {Object} deps
+ * @param {Electron.BrowserWindow} deps.hostWindow 唯一的可见应用窗口
  * @param {() => Array<Object>} deps.getAdapters 桌面端加载的适配器
  * @param {() => Array<Object>} deps.getWatchlist 登记站点
  * @param {(incoming:Object) => Object} deps.onVisit 一条访问的来料；交给写入路径
  * @param {(file:string, message:string) => void} [deps.onAdapterWarning] 播放规则失效告警
+ * @param {() => void} [deps.onStateChange] 地址、标签、载入状态或错误变化
+ * @param {() => "browser"|"settings"} [deps.getMode] 主窗口当前的显示模式
  */
-function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning = () => {} }) {
+function createBrowser({
+  hostWindow,
+  getAdapters,
+  getWatchlist,
+  onVisit,
+  onAdapterWarning = () => {},
+  onStateChange = () => {},
+  getMode = () => "browser",
+}) {
   const siteSession = session.fromPartition(PARTITION);
-  let win = null;
-  let takeoverGeneration = 0;
-  let pendingMedia = null;
+  const tabs = new Map();
+  const mediaTabs = new Map();
+  let activeTabId = 0;
 
-  // 媒体资源经代理改写：站点页拉到的清单没有流内广告（ADR-0012）。
-  // 代理只管媒体：站点的其余流量不经过它，页面的行为一点不变。
+  function isLive(tab) {
+    return tabs.get(tab.id) === tab && !tab.contents.isDestroyed();
+  }
+
+  function activeTab() {
+    const tab = tabs.get(activeTabId);
+    return tab && !tab.contents.isDestroyed() ? tab : null;
+  }
+
   const mediaProxy = createMediaProxy({
     session: siteSession,
-    getReferer: () => (win && !win.isDestroyed() ? win.webContents.getURL() : ""),
+    getMediaKey(webContentsId) {
+      const tab = tabs.get(webContentsId);
+      return tab && !tab.contents.isDestroyed() ? tab.mediaKey : "";
+    },
+    getReferer(mediaKey) {
+      const tab = mediaTabs.get(mediaKey);
+      if (!tab || !isLive(tab)) return null;
+      return tab.contents.getURL();
+    },
   });
 
-  function cancelMediaDetection(error) {
-    const pending = pendingMedia;
+  function cancelMediaDetection(tab, error) {
+    const pending = tab.pendingMedia;
     if (!pending) return;
-    pendingMedia = null;
+    tab.pendingMedia = null;
     clearTimeout(pending.timer);
     pending.reject(error);
   }
 
-  function finishMediaDetection(media) {
-    const pending = pendingMedia;
-    if (!pending || !win || win.isDestroyed()) return;
-    pendingMedia = null;
+  function finishMediaDetection(tab, media) {
+    const pending = tab.pendingMedia;
+    if (!pending || !isLive(tab)) return;
+    tab.pendingMedia = null;
     clearTimeout(pending.timer);
-    pending.resolve({ src: media.src, pageUrl: win.webContents.getURL() });
+    pending.resolve({ src: media.src, pageUrl: tab.contents.getURL() });
   }
 
-  /** 站点页窗口：没有就开一个，有就复用。 */
-  function ensureWindow() {
-    if (win && !win.isDestroyed()) return win;
-    win = new BrowserWindow({
-      width: 1100,
-      height: 760,
-      title: "Acuminata",
-      autoHideMenuBar: true,
-      webPreferences: {
-        partition: PARTITION,
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    });
-    win.on("closed", () => {
-      takeoverGeneration++;
-      cancelMediaDetection(new Error("媒体检测已取消：站点页已关闭"));
-      win = null;
-    });
-    // 整页换页与页内换页（history.pushState）都算一次新页面：两种都得采。
-    win.webContents.on("did-finish-load", () => {
-      capture().catch((e) => console.error("[SitePage] capture failed:", e));
-      takeover().catch((e) => console.error("[SitePage] native takeover failed:", e));
-    });
-    win.webContents.on("did-navigate-in-page", () => {
-      capture().catch((e) => console.error("[SitePage] capture failed:", e));
-      takeover().catch((e) => console.error("[SitePage] native takeover failed:", e));
-    });
-    win.webContents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
-      if (isMainFrame) {
-        cancelMediaDetection(new Error(`媒体页面载入失败 ${code} ${description}`));
-      }
-    });
-    return win;
+  function layout() {
+    if (!hostWindow || hostWindow.isDestroyed()) return;
+    const { width, height } = hostWindow.getContentBounds();
+    for (const tab of tabs.values()) {
+      tab.view.setBounds({
+        x: 0,
+        y: BROWSER_CHROME_HEIGHT,
+        width,
+        height: Math.max(0, height - BROWSER_CHROME_HEIGHT),
+      });
+      tab.view.setVisible(
+        getMode() === "browser" && tab.id === activeTabId && !!tab.contents.getURL(),
+      );
+    }
   }
 
-  async function takeover() {
-    const generation = ++takeoverGeneration;
-    let adapter = null;
+  function notifyStateChange() {
+    layout();
+    onStateChange();
+  }
+
+  function titleFor(tab) {
+    const url = tab.contents.getURL();
+    if (!url) return "新标签页";
+    const title = tab.contents.getTitle();
+    if (title) return title;
     try {
-      const adapters = getAdapters() || [];
-      const expr = `(${collectPage.toString()})([])`;
-      const page = await win.webContents.executeJavaScript(expr, true);
-      adapter = detectBySignature(page.pageSignature, adapters);
-    } catch (e) {
-      adapter = null;
+      return new URL(url).hostname || "新标签页";
+    } catch {
+      return "新标签页";
     }
-    while (generation === takeoverGeneration && win && !win.isDestroyed()) {
-      const detectExpr = `(${detectNativePlayer.toString()})(${!!pendingMedia})`;
-      const media = await win.webContents.executeJavaScript(detectExpr, true);
-      if (generation !== takeoverGeneration) return false;
-      if (media && media.src) {
-        const request = {
-          ...media,
-          nativeSrc: proxyUrl(media.src, "segment", SCOPE_APP),
-          playback: adapter && adapter.playback,
-        };
-        const expr = `(${takeoverNativePlayer.toString()})(${JSON.stringify(request)})`;
-        const result = await win.webContents.executeJavaScript(expr, true);
-        if (generation !== takeoverGeneration) return false;
-        if (result && result.ok) {
-          if (result.warning && adapter && adapter.file) {
-            onAdapterWarning(adapter.file, result.warning);
-          }
-          finishMediaDetection(media);
-          return true;
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-    return false;
   }
 
-  /**
-   * 抽这一页看到的字段，交给写入路径。
-   * 未登记的站点不产生访问（兴趣分析只针对用户显式登记的站点，ADR-0003）。
-   */
-  async function capture() {
-    if (pendingMedia || !win || win.isDestroyed()) return null;
-    const url = win.webContents.getURL();
+  function getState() {
+    return {
+      activeTabId,
+      tabs: Array.from(tabs.values(), (tab) => {
+        const available = !tab.contents.isDestroyed();
+        return {
+          id: tab.id,
+          title: available ? titleFor(tab) : "新标签页",
+          url: available ? tab.contents.getURL() : "",
+          isLoading: available ? tab.contents.isLoading() : false,
+          canGoBack: available ? tab.contents.navigationHistory.canGoBack() : false,
+          canGoForward: available ? tab.contents.navigationHistory.canGoForward() : false,
+          error: tab.loadError,
+        };
+      }),
+    };
+  }
+
+  function openInTab(tab, address) {
+    const url = normalizeAddress(address);
+    if (!isLive(tab)) throw new Error("标签页不存在");
+    cancelMediaDetection(tab, new Error("媒体检测已取消：导航已被替换"));
+    tab.takeoverGeneration++;
+    hostWindow.focus();
+    const loading = tab.contents.loadURL(url);
+    if (loading && loading.catch) loading.catch(() => {});
+    layout();
+    return true;
+  }
+
+  async function capture(tab) {
+    const generation = ++tab.captureGeneration;
+    if (tab.pendingMedia || !isLive(tab)) return null;
+    const url = tab.contents.getURL();
     const site = matchSite(url, getWatchlist());
     if (!site) return null;
 
-    const title = win.webContents.getTitle();
+    const title = tab.contents.getTitle();
     let page = null;
     try {
-      // 采集函数是自足的（shared/page-collect.js）：整段注入页面即可，
-      // 同一个自足函数也在真实页面夹具测试里运行。
       const expr = `(${collectPage.toString()})(${JSON.stringify(getAdapters() || [])})`;
-      page = await win.webContents.executeJavaScript(expr, true);
+      page = await tab.contents.executeJavaScript(expr, true);
     } catch (e) {
-      page = null; // 抽不到字段不该丢掉这次访问：降级而不是丢弃（ADR-0003）
+      page = null;
     }
+    if (
+      !isLive(tab) || generation !== tab.captureGeneration || tab.contents.getURL() !== url
+    ) return null;
 
     return onVisit({
       url,
       title,
       domain: extractDomain(url) || site.domain,
       matchedRule: site.domain,
-      // 站点页没有浏览器标签页号，访问统一用 0。
-      tabId: 0,
+      tabId: tab.id,
       timestamp: Date.now(),
       favIconUrl: "",
       description: (page && page.description) || "",
@@ -163,56 +198,258 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
     });
   }
 
-  /**
-   * 打开一个地址。地址没给就不动（界面会空调用这个动作）。
-   * @param {string} url
-   */
-  function open(url) {
-    if (!url) return false;
-    cancelMediaDetection(new Error("媒体检测已取消：导航已被替换"));
-    const w = ensureWindow();
-    w.focus();
-    w.loadURL(url);
-    return true;
+  async function takeover(tab) {
+    const generation = ++tab.takeoverGeneration;
+    let adapter = null;
+    try {
+      const adapters = getAdapters() || [];
+      const expr = `(${collectPage.toString()})([])`;
+      const page = await tab.contents.executeJavaScript(expr, true);
+      adapter = detectBySignature(page.pageSignature, adapters);
+    } catch (e) {
+      adapter = null;
+    }
+    while (isLive(tab) && generation === tab.takeoverGeneration) {
+      const detectExpr = `(${detectNativePlayer.toString()})(${!!tab.pendingMedia})`;
+      const media = await tab.contents.executeJavaScript(detectExpr, true);
+      if (!isLive(tab) || generation !== tab.takeoverGeneration) return false;
+      if (media && media.src) {
+        const request = {
+          ...media,
+          nativeSrc: proxyUrl(media.src, "segment", SCOPE_APP, tab.mediaKey),
+          playback: adapter && adapter.playback,
+        };
+        const expr = `(${takeoverNativePlayer.toString()})(${JSON.stringify(request)})`;
+        const result = await tab.contents.executeJavaScript(expr, true);
+        if (!isLive(tab) || generation !== tab.takeoverGeneration) return false;
+        if (result && result.ok) {
+          if (result.warning && adapter && adapter.file) {
+            onAdapterWarning(adapter.file, result.warning);
+          }
+          finishMediaDetection(tab, media);
+          return true;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return false;
   }
 
-  async function openForMedia(url) {
-    if (!url) throw new Error("缺少媒体来源地址");
-    cancelMediaDetection(new Error("媒体检测已取消：导航已被替换"));
-    const w = ensureWindow();
-    w.focus();
-    takeoverGeneration++;
+  function startPageWork(tab) {
+    capture(tab).catch((e) => console.error("[Browser] capture failed:", e));
+    takeover(tab).catch((e) => console.error("[Browser] native takeover failed:", e));
+  }
+
+  function handleDestroyed(tab) {
+    if (tabs.get(tab.id) !== tab) return;
+    const ids = Array.from(tabs.keys());
+    const index = ids.indexOf(tab.id);
+    const wasActive = activeTabId === tab.id;
+    const nextId = wasActive ? (ids[index + 1] || ids[index - 1] || 0) : activeTabId;
+    tabs.delete(tab.id);
+    mediaTabs.delete(tab.mediaKey);
+    tab.captureGeneration++;
+    tab.takeoverGeneration++;
+    cancelMediaDetection(tab, new Error("媒体检测已取消：标签页已关闭"));
+    if (wasActive) activeTabId = nextId;
+    if (!tabs.size && hostWindow && !hostWindow.isDestroyed()) {
+      activeTabId = createTab().id;
+    }
+    notifyStateChange();
+  }
+
+  function createTab() {
+    if (!hostWindow || hostWindow.isDestroyed()) throw new Error("应用窗口已关闭");
+    const view = new WebContentsView({
+      webPreferences: {
+        partition: PARTITION,
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        webviewTag: false,
+      },
+    });
+    const contents = view.webContents;
+    const tab = {
+      id: contents.id,
+      view,
+      contents,
+      mediaKey: randomUUID(),
+      loadError: "",
+      captureGeneration: 0,
+      takeoverGeneration: 0,
+      pendingMedia: null,
+    };
+    tabs.set(tab.id, tab);
+    mediaTabs.set(tab.mediaKey, tab);
+    hostWindow.contentView.addChildView(view);
+
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isWebAddress(url) && isLive(tab)) openInTab(tab, url);
+      return { action: "deny" };
+    });
+    const denyNonWebNavigation = (event, url, _isInPlace, isMainFrame) => {
+      if (isMainFrame && !isWebAddress(url)) event.preventDefault();
+    };
+    contents.on("will-navigate", denyNonWebNavigation);
+    contents.on("will-redirect", denyNonWebNavigation);
+    contents.on("did-start-navigation", (_event, _url, _isInPlace, isMainFrame) => {
+      if (!isMainFrame || !isLive(tab)) return;
+      tab.loadError = "";
+      tab.captureGeneration++;
+      tab.takeoverGeneration++;
+      notifyStateChange();
+    });
+    contents.on("did-navigate", () => {
+      if (isLive(tab)) notifyStateChange();
+    });
+    contents.on("did-navigate-in-page", () => {
+      if (!isLive(tab)) return;
+      notifyStateChange();
+      startPageWork(tab);
+    });
+    contents.on("page-title-updated", () => {
+      if (isLive(tab)) notifyStateChange();
+    });
+    contents.on("did-start-loading", () => {
+      if (isLive(tab)) notifyStateChange();
+    });
+    contents.on("did-stop-loading", () => {
+      if (isLive(tab)) notifyStateChange();
+    });
+    contents.on("did-finish-load", () => {
+      if (!isLive(tab)) return;
+      notifyStateChange();
+      startPageWork(tab);
+    });
+    contents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
+      if (!isMainFrame || !isLive(tab)) return;
+      tab.takeoverGeneration++;
+      cancelMediaDetection(tab, new Error(`媒体页面载入失败 ${code} ${description}`));
+      if (code !== -3) tab.loadError = `${code} ${description}`;
+      notifyStateChange();
+    });
+    contents.once("destroyed", () => handleDestroyed(tab));
+    return tab;
+  }
+
+  function newTab() {
+    const tab = createTab();
+    activeTabId = tab.id;
+    hostWindow.focus();
+    if (getMode() === "browser") tab.contents.focus();
+    notifyStateChange();
+    return getState();
+  }
+
+  function activateTab(tabId) {
+    const tab = tabs.get(tabId);
+    if (!tab || tab.contents.isDestroyed()) throw new Error("标签页不存在");
+    activeTabId = tabId;
+    hostWindow.focus();
+    if (getMode() === "browser") tab.contents.focus();
+    notifyStateChange();
+    return getState();
+  }
+
+  function closeTab(tabId) {
+    const tab = tabs.get(tabId);
+    if (!tab) return getState();
+    const ids = Array.from(tabs.keys());
+    const index = ids.indexOf(tabId);
+    const wasActive = activeTabId === tabId;
+    const nextId = wasActive ? (ids[index + 1] || ids[index - 1] || 0) : activeTabId;
+
+    tabs.delete(tabId);
+    mediaTabs.delete(tab.mediaKey);
+    tab.captureGeneration++;
+    tab.takeoverGeneration++;
+    cancelMediaDetection(tab, new Error("媒体检测已取消：标签页已关闭"));
+    if (hostWindow && !hostWindow.isDestroyed()) {
+      hostWindow.contentView.removeChildView(tab.view);
+    }
+    if (!tab.contents.isDestroyed()) tab.contents.close({ waitForBeforeUnload: false });
+
+    if (wasActive) activeTabId = nextId;
+    if (!tabs.size) activeTabId = createTab().id;
+    const next = activeTab();
+    if (wasActive && next && getMode() === "browser") next.contents.focus();
+    notifyStateChange();
+    return getState();
+  }
+
+  function open(address) {
+    const tab = activeTab();
+    if (!tab) throw new Error("标签页不存在");
+    return openInTab(tab, address);
+  }
+
+  async function openForMedia(address) {
+    const url = normalizeAddress(address);
+    const tab = activeTab();
+    if (!tab) throw new Error("标签页不存在");
+    cancelMediaDetection(tab, new Error("媒体检测已取消：导航已被替换"));
+    hostWindow.focus();
+    tab.takeoverGeneration++;
     const detection = new Promise((resolve, reject) => {
       const pending = { resolve, reject, timer: null };
       pending.timer = setTimeout(() => {
-        if (pendingMedia === pending) {
-          cancelMediaDetection(new Error("媒体检测超时"));
+        if (tab.pendingMedia === pending) {
+          cancelMediaDetection(tab, new Error("媒体检测超时"));
         }
       }, 30000);
-      pendingMedia = pending;
+      tab.pendingMedia = pending;
     });
     try {
-      const loading = w.loadURL(url);
-      if (loading && loading.catch) loading.catch(cancelMediaDetection);
+      const loading = tab.contents.loadURL(url);
+      if (loading && loading.catch) {
+        loading.catch((error) => cancelMediaDetection(tab, error));
+      }
     } catch (error) {
-      cancelMediaDetection(error);
+      cancelMediaDetection(tab, error);
     }
+    layout();
     return detection;
   }
+
+  function action(action) {
+    const tab = activeTab();
+    if (!tab) return getState();
+    if (action === "back" && tab.contents.navigationHistory.canGoBack()) {
+      tab.contents.navigationHistory.goBack();
+    } else if (action === "forward" && tab.contents.navigationHistory.canGoForward()) {
+      tab.contents.navigationHistory.goForward();
+    } else if (action === "reload") {
+      tab.contents.reload();
+    }
+    return getState();
+  }
+
+  activeTabId = createTab().id;
+  layout();
 
   return {
     open,
     openForMedia,
+    getState,
+    newTab,
+    activateTab,
+    closeTab,
+    action,
+    layout,
     fetchMedia: mediaProxy.fetchMedia,
-    /** 站点页自己的 session：媒体资源的协议层改写挂在这里（ADR-0012）。 */
     get session() {
       return siteSession;
     },
-    /** 当前窗口；没有就 null。 */
-    get window() {
-      return win && !win.isDestroyed() ? win : null;
+    get view() {
+      const tab = activeTab();
+      return tab ? tab.view : null;
+    },
+    get webContents() {
+      const tab = activeTab();
+      return tab ? tab.contents : null;
     },
   };
 }
 
-module.exports = { createSitePage, PARTITION };
+module.exports = { createBrowser, normalizeAddress, PARTITION, BROWSER_CHROME_HEIGHT };

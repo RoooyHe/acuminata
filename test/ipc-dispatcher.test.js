@@ -15,7 +15,12 @@ function fakeIpcMain() {
     invoke(channel, ...args) {
       const fn = handlers.get(channel);
       if (!fn) throw new Error("no handler registered for " + channel);
-      return fn({}, ...args);
+      return fn({ sender: {} }, ...args);
+    },
+    async invokeFrom(sender, channel, ...args) {
+      const fn = handlers.get(channel);
+      if (!fn) throw new Error("no handler registered for " + channel);
+      return fn({ sender }, ...args);
     },
   };
 }
@@ -116,6 +121,107 @@ async function runTests() {
     "列表总数与健康度计数一致",
   );
   console.log("  ✓ 未归属列表与健康度计数一致");
+
+  const shell = {};
+  const browserCalls = [];
+  const browserState = {
+    mode: "browser",
+    activeTabId: 7,
+    tabs: [{
+      id: 7,
+      title: "Example",
+      url: "https://example.com/",
+      isLoading: false,
+      canGoBack: false,
+      canGoForward: false,
+      error: "",
+    }],
+  };
+  const browser = {
+    getState: () => browserState,
+    navigate: (address) => {
+      browserCalls.push(["navigate", address]);
+      return browserState;
+    },
+    action: (action) => {
+      browserCalls.push(["action", action]);
+      return browserState;
+    },
+    setMode: (mode) => {
+      browserCalls.push(["mode", mode]);
+      return browserState;
+    },
+    newTab: () => {
+      browserCalls.push(["new"]);
+      return browserState;
+    },
+    activateTab: (tabId) => {
+      browserCalls.push(["activate", tabId]);
+      return browserState;
+    },
+    closeTab: (tabId) => {
+      browserCalls.push(["close", tabId]);
+      return browserState;
+    },
+  };
+  const opened = [];
+  const browserIpc = fakeIpcMain();
+  createIPCDispatcher(browserIpc, store, {
+    browser,
+    getShellWebContents: () => shell,
+    openSitePage: (url) => opened.push(url),
+  });
+
+  const browserChannels = [
+    "browser:state:get",
+    "browser:navigate",
+    "browser:action",
+    "browser:mode:set",
+    "browser:tab:new",
+    "browser:tab:activate",
+    "browser:tab:close",
+  ];
+  for (const channel of browserChannels) {
+    await assert.rejects(browserIpc.invokeFrom({}, channel), /sender/);
+  }
+  await assert.rejects(
+    browserIpc.invokeFrom(shell, "browser:navigate", ""),
+  );
+  await assert.rejects(
+    browserIpc.invokeFrom(shell, "browser:navigate", 42),
+  );
+  await assert.rejects(
+    browserIpc.invokeFrom(shell, "browser:action", "home"),
+  );
+  await assert.rejects(
+    browserIpc.invokeFrom(shell, "browser:mode:set", "agent"),
+  );
+  for (const channel of ["browser:tab:activate", "browser:tab:close"]) {
+    for (const tabId of ["7", 7.5, null]) {
+      await assert.rejects(browserIpc.invokeFrom(shell, channel, tabId));
+    }
+  }
+  for (const channel of browserChannels) {
+    const args = channel === "browser:navigate" ? ["example.com"]
+      : channel === "browser:action" ? ["reload"]
+        : channel === "browser:mode:set" ? ["settings"]
+          : ["browser:tab:activate", "browser:tab:close"].includes(channel) ? [7]
+            : [];
+    assert.strictEqual(await browserIpc.invokeFrom(shell, channel, ...args), browserState);
+  }
+  assert.deepStrictEqual(browserCalls, [
+    ["navigate", "example.com"],
+    ["action", "reload"],
+    ["mode", "settings"],
+    ["new"],
+    ["activate", 7],
+    ["close", 7],
+  ]);
+  await browserIpc.invoke("records:open-url", "https://example.com/v/1");
+  assert.deepStrictEqual(opened, ["https://example.com/v/1"]);
+  console.log("  ✓ browser IPC validates every sender, address, action, mode, and integer tab ID");
+  console.log("  ✓ every browser route returns the current tab-shaped BrowserState");
+  console.log("  ✓ records:open-url keeps mirror resolution and uses the site opener");
 
   console.log("\n✅ All IPC dispatcher tests passed!");
 }
