@@ -295,12 +295,12 @@ function createMediaProxy({ session, getReferer }) {
    * @param {string} upstreamUrl
    * @returns {Promise<Object>}
    */
-  async function upstreamHeaders(upstreamUrl) {
+  async function upstreamHeaders(upstreamUrl, pageUrl) {
     const headers = {
       "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Acuminata",
       "accept-encoding": "identity",
     };
-    const ref = referer();
+    const ref = pageUrl || referer();
     if (ref) headers.referer = ref;
     try {
       const cookies = await session.cookies.get({ url: upstreamUrl });
@@ -368,6 +368,13 @@ function createMediaProxy({ session, getReferer }) {
     });
   }
 
+  async function fetchMedia(url, pageUrl) {
+    return fetchUpstream(url, {
+      getHeaders: (upstreamUrl) => upstreamHeaders(upstreamUrl, pageUrl),
+      allowPrivate: await isPrivateReferer(pageUrl || referer()),
+    });
+  }
+
   /**
    * scheme 的处理器：媒体请求到这里，按地址里的 kind 决定改写还是透传。
    * @param {Request} request
@@ -428,7 +435,7 @@ function createMediaProxy({ session, getReferer }) {
   session.webRequest.onBeforeRequest({ urls: ["*://*/*"] }, redirectMedia);
   session.protocol.handle(SCHEME, handle);
 
-  return { handle, proxyUrl, redirectMedia };
+  return { handle, proxyUrl, redirectMedia, fetchMedia };
 }
 
 module.exports = {

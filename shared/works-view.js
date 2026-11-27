@@ -51,6 +51,7 @@
       lastVisitText: w.lastVisitAt
         ? shared.formatTime(w.lastVisitAt)
         : "无访问",
+      hasLocalCopy: !!w.hasLocalCopy,
     }));
 
     return {

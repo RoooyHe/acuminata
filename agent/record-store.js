@@ -135,6 +135,8 @@ class RecordStore {
   getWorksPage(page, pageSize, options) { return this._works.getWorksPage(page, pageSize, options); }
   getWorkRow(workId) { return this._works.getWorkRow(workId); }
   getWorkDetail(workId) { return this._works.getWorkDetail(workId); }
+  getLocalCopy(workId) { return this._works.getLocalCopy(workId); }
+  markLocalCopy(workId, copy) { return this._works.markLocalCopy(workId, copy); }
   resolveOpenUrl(url) { return this._works.resolveOpenUrl(url); }
   getAmbiguousWorks() { return this._works.getAmbiguousWorks(); }
   backfillWorks(options) { return this._works.backfillWorks(options); }

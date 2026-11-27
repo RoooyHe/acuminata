@@ -193,4 +193,33 @@ function rewriteTagUri(tag, opts) {
   });
 }
 
-module.exports = { rewriteManifest, resolveUri };
+/**
+ * 原样读出清单引用的地址，不去广告、不改写清单。
+ * @param {string} text 清单文本
+ * @param {string} baseUrl 清单自己的地址
+ * @returns {{url: string, kind: "playlist"|"segment"|"file"}[]}
+ */
+function manifestReferences(text, baseUrl) {
+  const refs = [];
+  let lastTag = "";
+  for (const rawLine of text.split(/\r\n|\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("#")) {
+      const kind = tagUriKind(line);
+      if (kind) {
+        for (const match of line.matchAll(/URI="([^"]*)"/g)) {
+          if (match[1]) refs.push({ url: resolveUri(match[1], baseUrl), kind });
+        }
+      }
+      lastTag = line;
+      continue;
+    }
+    const kind = lastTag.startsWith("#EXT-X-STREAM-INF:") ? "playlist" : "segment";
+    refs.push({ url: resolveUri(line, baseUrl), kind });
+    lastTag = "";
+  }
+  return refs;
+}
+
+module.exports = { rewriteManifest, manifestReferences, resolveUri };

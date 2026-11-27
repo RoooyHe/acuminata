@@ -21,6 +21,7 @@ const { listFetchTargets, collectListEntries } = require("./agent/adapter");
 const { reflectPrompt } = require("./agent/analysis-pipeline");
 const { applyReflection } = require("./agent/reflect");
 const { registerMediaScheme } = require("./media-proxy");
+const { saveMediaCopy } = require("./local-copy");
 
 // 媒体代理的 scheme：站点页的媒体请求被重定向到这里（ADR-0012）。
 // 必须在 app ready 之前登记，否则 Chromium 不认这个 scheme。
@@ -34,12 +35,15 @@ const DB_PATH = process.env.ACUMINATA_DB_PATH
 // 用户写的适配器放在这里（打包后内置的 adapters/ 在 asar 里、不可写）。
 // 与内置适配器同一种格式、同一个 loader，同名时用户目录覆盖内置（ADR-0006）。
 const USER_ADAPTER_DIR = path.join(app.getPath("userData"), "adapters");
+const LOCAL_COPY_ROOT = process.env.ACUMINATA_LOCAL_COPY_DIR ||
+  path.join(app.getPath("userData"), "local-copies");
 
 let mainWindow;
 let extensionServer;
 let sitePage;
 let extensionClients = new Set();
 let store;
+let localCopyQueue = Promise.resolve();
 let aiConfig = {
   provider: "ollama",
   endpoint: "http://127.0.0.1:11434",
@@ -175,6 +179,7 @@ async function init() {
     executeTool,
     // 「打开来源」开在应用内的站点页，而不是外部浏览器（ADR-0011）。
     openSitePage: (url) => sitePage.open(url),
+    saveWorkLocalCopy,
     // IPC 的 works:health 要的是适配器行本身；访问广播里带走整份快照。
     getAdapterHealth: () => store.getHealthSnapshot().adapters,
     fetchCandidates: fetchCandidates,
@@ -268,6 +273,44 @@ function recordIncomingVisit(incoming) {
     );
   }
   return result;
+}
+
+async function performSaveWorkLocalCopy(workId) {
+  if (!store.getWork(workId)) throw new Error("作品不存在");
+  const existing = store.getLocalCopy(workId);
+  if (existing) return { localCopy: existing, reused: true };
+
+  const detail = store.getWorkDetail(workId);
+  const latest = detail.visits[0];
+  if (!latest) throw new Error("作品没有可保存的来源");
+  const directory = path.join(LOCAL_COPY_ROOT, workId);
+  let sourceUrl = "";
+  let pageUrl = "";
+  if (!fs.existsSync(path.join(directory, "source.json"))) {
+    const media = await sitePage.openForMedia(store.resolveOpenUrl(latest.url));
+    sourceUrl = media.src;
+    pageUrl = media.pageUrl;
+  }
+  const saved = await saveMediaCopy({
+    sourceUrl,
+    directory,
+    fetch: (url) => sitePage.fetchMedia(url, pageUrl),
+  });
+  const localCopy = store.markLocalCopy(workId, {
+    sourceUrl: saved.sourceUrl,
+    directory: saved.directory,
+  });
+  if (!localCopy) throw new Error("作品没有可保存本地副本的身份键");
+  return { localCopy, reused: saved.reused };
+}
+
+function saveWorkLocalCopy(workId) {
+  if (typeof workId !== "string" || !workId) {
+    return Promise.reject(new Error("无效的作品 ID"));
+  }
+  const job = localCopyQueue.then(() => performSaveWorkLocalCopy(workId));
+  localCopyQueue = job.catch(() => {});
+  return job;
 }
 
 function handleExtensionMessage(ws, msg) {

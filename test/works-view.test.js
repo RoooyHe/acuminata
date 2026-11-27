@@ -62,7 +62,10 @@ check(
   "站点带上各自颜色",
 );
 check(row.lastVisitText && row.lastVisitText !== "无访问", "有访问 → 显示格式化时间");
+check(row.hasLocalCopy === false, "没有本地副本 → 行明确为 false");
 check(!view.loadMore, "只有一页 → 没有「加载更多」");
+const copied = buildWorksView({ works: [{ ...work, hasLocalCopy: 1 }], total: 1 });
+check(copied.rows[0].hasLocalCopy === true, "本地副本事实在作品行上可见");
 
 // 缺字段的作品用兜底值，不留 undefined
 const bare = buildWorksView({ works: [{ id: "w2" }], total: 1, site: "all", watchlist: [] });
@@ -70,7 +73,8 @@ check(
   bare.rows[0].title === "未命名作品" &&
     bare.rows[0].score === 0 &&
     bare.rows[0].visitCount === 0 &&
-    bare.rows[0].lastVisitText === "无访问",
+    bare.rows[0].lastVisitText === "无访问" &&
+    bare.rows[0].hasLocalCopy === false,
   "缺字段的作品有兜底值",
 );
 check(siteLabel("unknown.com", WATCHLIST) === "unknown.com", "认不出的站点用规则本身");

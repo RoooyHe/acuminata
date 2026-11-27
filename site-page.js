@@ -27,13 +27,30 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
   const siteSession = session.fromPartition(PARTITION);
   let win = null;
   let takeoverGeneration = 0;
+  let pendingMedia = null;
 
   // 媒体资源经代理改写：站点页拉到的清单没有流内广告（ADR-0012）。
   // 代理只管媒体：站点的其余流量不经过它，页面的行为一点不变。
-  createMediaProxy({
+  const mediaProxy = createMediaProxy({
     session: siteSession,
     getReferer: () => (win && !win.isDestroyed() ? win.webContents.getURL() : ""),
   });
+
+  function cancelMediaDetection(error) {
+    const pending = pendingMedia;
+    if (!pending) return;
+    pendingMedia = null;
+    clearTimeout(pending.timer);
+    pending.reject(error);
+  }
+
+  function finishMediaDetection(media) {
+    const pending = pendingMedia;
+    if (!pending || !win || win.isDestroyed()) return;
+    pendingMedia = null;
+    clearTimeout(pending.timer);
+    pending.resolve({ src: media.src, pageUrl: win.webContents.getURL() });
+  }
 
   /** 站点页窗口：没有就开一个，有就复用。 */
   function ensureWindow() {
@@ -52,6 +69,7 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
     });
     win.on("closed", () => {
       takeoverGeneration++;
+      cancelMediaDetection(new Error("媒体检测已取消：站点页已关闭"));
       win = null;
     });
     // 整页换页与页内换页（history.pushState）都算一次新页面：两种都得采。
@@ -63,12 +81,16 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
       capture().catch((e) => console.error("[SitePage] capture failed:", e));
       takeover().catch((e) => console.error("[SitePage] native takeover failed:", e));
     });
+    win.webContents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
+      if (isMainFrame) {
+        cancelMediaDetection(new Error(`媒体页面载入失败 ${code} ${description}`));
+      }
+    });
     return win;
   }
 
   async function takeover() {
     const generation = ++takeoverGeneration;
-    const detectExpr = `(${detectNativePlayer.toString()})()`;
     let adapter = null;
     try {
       const adapters = getAdapters() || [];
@@ -79,7 +101,9 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
       adapter = null;
     }
     while (generation === takeoverGeneration && win && !win.isDestroyed()) {
+      const detectExpr = `(${detectNativePlayer.toString()})(${!!pendingMedia})`;
       const media = await win.webContents.executeJavaScript(detectExpr, true);
+      if (generation !== takeoverGeneration) return false;
       if (media && media.src) {
         const request = {
           ...media,
@@ -88,10 +112,12 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
         };
         const expr = `(${takeoverNativePlayer.toString()})(${JSON.stringify(request)})`;
         const result = await win.webContents.executeJavaScript(expr, true);
+        if (generation !== takeoverGeneration) return false;
         if (result && result.ok) {
           if (result.warning && adapter && adapter.file) {
             onAdapterWarning(adapter.file, result.warning);
           }
+          finishMediaDetection(media);
           return true;
         }
       }
@@ -105,7 +131,7 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
    * 未登记的站点不产生访问（兴趣分析只针对用户显式登记的站点，ADR-0003）。
    */
   async function capture() {
-    if (!win || win.isDestroyed()) return null;
+    if (pendingMedia || !win || win.isDestroyed()) return null;
     const url = win.webContents.getURL();
     const site = matchSite(url, getWatchlist());
     if (!site) return null;
@@ -144,14 +170,41 @@ function createSitePage({ getAdapters, getWatchlist, onVisit, onAdapterWarning =
    */
   function open(url) {
     if (!url) return false;
+    cancelMediaDetection(new Error("媒体检测已取消：导航已被替换"));
     const w = ensureWindow();
     w.focus();
     w.loadURL(url);
     return true;
   }
 
+  async function openForMedia(url) {
+    if (!url) throw new Error("缺少媒体来源地址");
+    cancelMediaDetection(new Error("媒体检测已取消：导航已被替换"));
+    const w = ensureWindow();
+    w.focus();
+    takeoverGeneration++;
+    const detection = new Promise((resolve, reject) => {
+      const pending = { resolve, reject, timer: null };
+      pending.timer = setTimeout(() => {
+        if (pendingMedia === pending) {
+          cancelMediaDetection(new Error("媒体检测超时"));
+        }
+      }, 30000);
+      pendingMedia = pending;
+    });
+    try {
+      const loading = w.loadURL(url);
+      if (loading && loading.catch) loading.catch(cancelMediaDetection);
+    } catch (error) {
+      cancelMediaDetection(error);
+    }
+    return detection;
+  }
+
   return {
     open,
+    openForMedia,
+    fetchMedia: mediaProxy.fetchMedia,
     /** 站点页自己的 session：媒体资源的协议层改写挂在这里（ADR-0012）。 */
     get session() {
       return siteSession;
