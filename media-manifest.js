@@ -58,7 +58,7 @@ function resolveUri(uri, baseUrl) {
  *
  * `#EXT-X-MEDIA` 的 TYPE 说了算：音视频轨指向一份媒体清单，字幕轨指向一个字幕文件。
  * `#EXT-X-I-FRAME-STREAM-INF` 指向一份 I 帧清单。
- * `#EXT-X-KEY`（密钥）与 `#EXT-X-MAP`（初始化段）都是文件。
+ * `#EXT-X-KEY`、`#EXT-X-SESSION-KEY`（密钥）与 `#EXT-X-MAP`（初始化段）都是文件。
  *
  * @param {string} tag
  * @returns {"playlist"|"file"|null}
@@ -69,7 +69,11 @@ function tagUriKind(tag) {
     const type = /TYPE=([A-Z-]+)/.exec(tag);
     return type && (type[1] === "AUDIO" || type[1] === "VIDEO") ? "playlist" : "file";
   }
-  if (tag.startsWith("#EXT-X-KEY:") || tag.startsWith("#EXT-X-MAP:")) return "file";
+  if (
+    tag.startsWith("#EXT-X-KEY:") ||
+    tag.startsWith("#EXT-X-SESSION-KEY:") ||
+    tag.startsWith("#EXT-X-MAP:")
+  ) return "file";
   return null;
 }
 

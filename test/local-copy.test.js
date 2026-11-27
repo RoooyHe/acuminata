@@ -13,8 +13,15 @@ const segmentUrl = "https://cdn.example/20260928/aiXU3jsO/782kb/hls/segment-0.ts
 const adUrl = "https://cdn.example/20260928/aiXU3jsO/782kb/hls/ad.ts";
 const keyUrl = "https://cdn.example/20260928/aiXU3jsO/782kb/hls/key.key";
 const mapUrl = "https://cdn.example/20260928/aiXU3jsO/782kb/hls/init.mp4";
-const master = fs.readFileSync(
-  path.join(__dirname, "fixtures", "media", "real-master-playlist.m3u8"),
+const sessionKeyUrl = "https://cdn.example/session.key";
+const master = Buffer.from(
+  fs.readFileSync(
+    path.join(__dirname, "fixtures", "media", "real-master-playlist.m3u8"),
+    "utf8",
+  ).replace(
+    "#EXT-X-STREAM-INF:",
+    '#EXT-X-SESSION-KEY:METHOD=AES-128,URI="session.key"\n#EXT-X-STREAM-INF:',
+  ),
 );
 const realMedia = fs.readFileSync(
   path.join(__dirname, "fixtures", "media", "real-media-playlist.m3u8"),
@@ -44,6 +51,7 @@ const bodies = new Map([
   [adUrl, Buffer.from("raw-ad-segment")],
   [keyUrl, Buffer.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])],
   [mapUrl, Buffer.from("raw-init-map")],
+  [sessionKeyUrl, Buffer.from("raw-session-key")],
 ]);
 
 function response(url) {
@@ -91,7 +99,7 @@ async function run() {
     return response(url);
   };
   const first = await saveMediaCopy({ sourceUrl, directory, fetch });
-  assert.deepStrictEqual(first, { directory, sourceUrl, reused: false, fileCount: 6 });
+  assert.deepStrictEqual(first, { directory, sourceUrl, reused: false, fileCount: 7 });
   assert.deepStrictEqual(fs.readFileSync(path.join(directory, "index.m3u8")), master);
   assert.deepStrictEqual(
     fs.readFileSync(path.join(directory, "manifests", archivedName(childUrl, ".m3u8"))),
@@ -103,6 +111,7 @@ async function run() {
     [adUrl, "segments", ".ts"],
     [keyUrl, "files", ".key"],
     [mapUrl, "files", ".mp4"],
+    [sessionKeyUrl, "files", ".key"],
   ]) {
     assert.deepStrictEqual(
       fs.readFileSync(path.join(directory, folder, archivedName(url, extension))),
