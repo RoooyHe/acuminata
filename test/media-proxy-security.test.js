@@ -107,6 +107,19 @@ test("a public site Referer cannot fetch a hostname that resolves to loopback", 
   }
 });
 
+test("NAT64 private targets are blocked before header lookup", async () => {
+  for (const address of ["64:ff9b::7f00:1", "64:ff9b:1::7f00:1"]) {
+    await assert.rejects(
+      fetchUpstream(`http://[${address}]/secret.mp4`, {
+        getHeaders: async () => {
+          throw new Error("getHeaders sentinel");
+        },
+      }),
+      /Blocked private media proxy target:/,
+    );
+  }
+});
+
 test("a local site Referer still permits local media", async () => {
   const server = await listen((req, res) => res.end("local media"));
   try {
