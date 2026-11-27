@@ -60,8 +60,8 @@ function createIPCDispatcher(ipcMain, store, deps = {}) {
     }),
   );
 
-  ipcMain.handle("records:page", (_, page, pageSize, filter) =>
-    store.getRecordsPage(page, pageSize, filter),
+  ipcMain.handle("records:page", (_, page, pageSize, filter, search) =>
+    store.getRecordsPage(page, pageSize, filter, search),
   );
 
   ipcMain.handle("works:page", (_, page, pageSize, options) =>

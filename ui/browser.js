@@ -13,6 +13,7 @@
   const reload = document.getElementById("browserReload");
   const tabs = document.getElementById("browserTabs");
   const newTab = document.getElementById("browserNewTab");
+  const historyButton = document.getElementById("browserHistory");
 
   /** @type {import("../shared/types").BrowserState} */
   let state = {
@@ -107,6 +108,13 @@
   settings.onclick = () => run(
     window.electronAPI.setBrowserMode(state.mode === "settings" ? "browser" : "settings"),
   );
+  async function openHistory() {
+    await run(window.electronAPI.setBrowserMode("settings"));
+    if (state.mode === "settings") {
+      document.querySelector('.nav-item[data-target="history"]').click();
+    }
+  }
+  historyButton.onclick = openHistory;
   tabs.addEventListener("click", (event) => {
     const close = event.target.closest("[data-close-tab-id]");
     if (close) {
@@ -124,6 +132,9 @@
       event.preventDefault();
       address.focus();
       address.select();
+    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "h") {
+      event.preventDefault();
+      openHistory();
     } else if (event.key === "Escape" && document.activeElement === address) {
       const active = activeTab();
       address.value = active ? active.url : "";

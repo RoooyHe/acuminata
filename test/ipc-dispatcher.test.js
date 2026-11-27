@@ -79,6 +79,17 @@ async function runTests() {
   const ipc = fakeIpcMain();
   createIPCDispatcher(ipc, store, { getAdapterHealth: () => adapters });
 
+  const historyPage = await ipc.invoke("records:page", 1, 10, "all", "未归类");
+  assert.deepStrictEqual(Object.keys(historyPage).sort(), [
+    "page",
+    "pageSize",
+    "records",
+    "total",
+  ]);
+  assert(historyPage.total === 1 && historyPage.records[0].id === "d-un-1", "records:page 转发全局搜索");
+  assert((await ipc.invoke("records:page", 1, 10, "all")).total === 2, "原有三参数 records:page 不搜索");
+  console.log("  ✓ records:page 保留分页形状并转发搜索");
+
   // ── works:unattributed ──
   const page = await ipc.invoke("works:unattributed", 1, 10, "");
   assert.deepStrictEqual(Object.keys(page).sort(), [

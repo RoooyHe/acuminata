@@ -21,6 +21,11 @@ let worksSort = "score";
 let worksSite = "all";
 const worksPageSize = 50;
 
+let historyRecords = [];
+let historyPage = 1;
+let historyTotal = 0;
+let historyQuery = "";
+
 // 未归属访问 + 适配器健康度
 /** @type {{ unattributedCount: number, adapters: Array<{key:string,label:string,kind:string,matched:number,dropped:number,suspect:boolean,warning:string}> }|null} */
 let health = null;
@@ -465,6 +470,63 @@ async function loadUnattributed(page) {
   renderUnattributed();
 }
 
+function renderHistory() {
+  const container = document.getElementById("historyContainer");
+  const more = document.getElementById("historyLoadMoreContainer");
+
+  if (historyRecords.length === 0) {
+    container.innerHTML = `<div style="padding:40px; text-align:center; color:var(--muted-fg)">${
+      historyQuery ? "没有找到匹配的访问" : "暂无访问历史"
+    }</div>`;
+    more.innerHTML = "";
+    return;
+  }
+
+  let html = "";
+  let currentGroup = "";
+  for (const r of historyRecords) {
+    const dateLabel = dateGroupLabel(r.timestamp);
+    if (dateLabel !== currentGroup) {
+      currentGroup = dateLabel;
+      html += `<div class="date-group-header">${dateLabel}</div>`;
+    }
+    const color = getDomainColor(r.matchedRule);
+    html += `
+      <div class="data-item" data-url="${encodeURIComponent(r.url)}">
+        <div class="item-body">
+          <div class="item-title">${escapeHtml(r.title || r.url)}</div>
+          <div class="item-meta">
+            <span class="badge" style="border-color:${color}; color:${color}">${escapeHtml(siteLabel(r.matchedRule))}</span>
+            <span>${formatTime(r.timestamp)}</span>
+            <span class="item-url">${escapeHtml(r.url)}</span>
+          </div>
+        </div>
+      </div>`;
+  }
+  container.innerHTML = html;
+
+  if (historyRecords.length < historyTotal) {
+    more.innerHTML = `<button id="btnHistoryLoadMore" class="btn btn-ghost">加载更多 (${historyRecords.length} / ${historyTotal})</button>`;
+    document.getElementById("btnHistoryLoadMore").onclick = () =>
+      loadHistory(historyPage + 1);
+  } else {
+    more.innerHTML = "";
+  }
+}
+
+async function loadHistory(page) {
+  const result = await window.electronAPI.getRecordsPage(
+    page,
+    worksPageSize,
+    "all",
+    historyQuery,
+  );
+  historyRecords = page === 1 ? result.records : historyRecords.concat(result.records);
+  historyPage = page;
+  historyTotal = result.total;
+  renderHistory();
+}
+
 function showWorksView(view) {
   worksView = view;
   const onWorks = view === "works";
@@ -580,6 +642,7 @@ document.querySelectorAll(".nav-item").forEach((item) => {
       .forEach((p) => p.classList.remove("active"));
     this.classList.add("active");
     document.getElementById(this.dataset.target).classList.add("active");
+    if (this.dataset.target === "history") loadHistory(1);
   };
 });
 
@@ -679,6 +742,16 @@ document.getElementById("btnUnattributedBack").onclick = function () {
 document.getElementById("unattributedSearchInput").oninput = function () {
   unattributedQuery = this.value.trim();
   loadUnattributed(1);
+};
+
+document.getElementById("historySearchInput").oninput = function () {
+  historyQuery = this.value.trim();
+  loadHistory(1);
+};
+
+document.getElementById("historyContainer").onclick = function (e) {
+  const item = e.target.closest(".data-item");
+  if (item) window.electronAPI.openUrl(decodeURIComponent(item.dataset.url));
 };
 
 document.getElementById("unattributedContainer").onclick = function (e) {
@@ -892,6 +965,12 @@ window.electronAPI.onUpdate((data) => {
     loadRecommendations();
   } else if (data.type === "agentPendingUpdated") {
     loadPendingActions();
+  }
+  if (
+    ["recordAdded", "recordUpdated", "recordsCleared"].includes(data.type) &&
+    document.getElementById("history").classList.contains("active")
+  ) {
+    loadHistory(1);
   }
   if (data.type === "agent_status") {
     // ✅ 新增：拦截 Agent 思维状态并在界面上输出

@@ -80,6 +80,25 @@ async function run() {
   });
   assert.strictEqual(visits.getRecordById("plain-1").id, "plain-1", "按 id 读回");
   assert.strictEqual(visits.getRecordsPage(1, 10, "example.com").total, 2, "按站点筛选");
+  assert.deepStrictEqual(
+    visits.getRecordsPage(1, 10, "all"),
+    visits.getRecordsPage(1, 10, "all", ""),
+    "空搜索不改变原有三参数调用",
+  );
+  assert.deepStrictEqual(
+    visits.getRecordsPage(1, 10, "all", "普通").records.map((r) => r.id),
+    ["plain-1"],
+    "全局分页按标题搜索",
+  );
+  assert.deepStrictEqual(
+    visits.getRecordsPage(1, 10, "all", "video/123").records.map((r) => r.id),
+    ["v-1"],
+    "全局分页按 URL 搜索",
+  );
+  assert.strictEqual(visits.getRecordsPage(1, 10, "all", "example.com").total, 2, "按站点规则搜索");
+  assert.strictEqual(visits.getRecordsPage(1, 10, "example.com", "普通").total, 1, "搜索与站点筛选同时生效");
+  assert.strictEqual(visits.getRecordsPage(1, 10, "example.com", "没有这条").total, 0, "搜索与站点筛选不会互相覆盖");
+  assert.strictEqual(visits.getRecordsPage(1, 10, "all", "' OR 1=1 --").total, 0, "搜索值作为 SQL 参数传入");
   visits.updateRecordScore("plain-1", 0); // 搜索按 score >= 0 过滤，先给个分
   assert.strictEqual(visits.searchRecords("普通", 10).length, 1, "按标题搜索");
   visits.toggleRecordPin("plain-1", true, 5);
@@ -90,6 +109,12 @@ async function run() {
   );
   visits.updateRecordScore("plain-1", 9);
   assert.strictEqual(visits.getRecordById("plain-1").score, 9, "改分");
+  assert.strictEqual(visits.getRecordsPage(1, 10, "pinned", "普通").total, 1, "搜索与钉住筛选同时生效");
+  assert.deepStrictEqual(
+    visits.getRecordsPage(1, 10, "pinned", "某剧").records.map((r) => r.id),
+    ["v-1"],
+    "钉住筛选保留匹配的已钉住访问",
+  );
   assert.strictEqual(visits.getStats().total, 2, "概览统计总数");
   assert.strictEqual(visits.getStats().enabled, true, "统计带 enabled（来自 settings）");
   assert.strictEqual(visits.getUnattributedCount(), 1, "未归属计数");

@@ -374,6 +374,77 @@ async function setBrowserModeAndWait(win, mode) {
   return null;
 }
 
+async function probeGlobalHistory(win, siteUrl) {
+  return win.webContents.executeJavaScript(`(async () => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const deadline = Date.now() + 10000;
+    const container = () => document.getElementById("historyContainer");
+    const openingVisit = ${JSON.stringify(Boolean(siteUrl))};
+    const expectedTitles = openingVisit ? [${JSON.stringify(SITE_TITLE)}] :
+      [${JSON.stringify(SEED_TITLE)}, ${JSON.stringify(SEED_UNATTR_TITLE)}];
+    document.getElementById("browserHistory").click();
+    const search = document.getElementById("historySearchInput");
+    search.value = "";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    let initialText = "";
+    let initialActive = false;
+    let hasDateGroup = false;
+    while (Date.now() < deadline) {
+      initialText = container() ? container().textContent : "";
+      initialActive = document.getElementById("history").classList.contains("active");
+      hasDateGroup = !!document.querySelector("#historyContainer .date-group-header");
+      if (initialActive && expectedTitles.every((title) => initialText.includes(title))) break;
+      await sleep(50);
+    }
+
+    if (!openingVisit) {
+      search.value = ${JSON.stringify(SEED_UNATTR_TITLE)};
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      let searchText = "";
+      while (Date.now() < deadline) {
+        searchText = container().textContent;
+        if (searchText.includes(${JSON.stringify(SEED_UNATTR_TITLE)}) &&
+          !searchText.includes(${JSON.stringify(SEED_TITLE)})) break;
+        await sleep(50);
+      }
+
+      search.value = "没有这条访问";
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      let emptyText = "";
+      while (Date.now() < deadline) {
+        emptyText = container().textContent;
+        if (emptyText.includes("没有找到匹配的访问")) break;
+        await sleep(50);
+      }
+      return { initialText, initialActive, hasDateGroup, searchText, emptyText };
+    }
+
+    search.value = ${JSON.stringify(SITE_TITLE)};
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    let row = null;
+    while (!row && Date.now() < deadline) {
+      row = Array.from(document.querySelectorAll("#historyContainer [data-url]"))
+        .find((el) => decodeURIComponent(el.dataset.url) === ${JSON.stringify(siteUrl)});
+      if (!row) await sleep(50);
+    }
+    if (row) row.click();
+    let state = null;
+    while (Date.now() < deadline) {
+      state = await window.electronAPI.getBrowserState();
+      if (state.mode === "browser" && state.tabs.find((tab) => tab.id === state.activeTabId).url === ${JSON.stringify(siteUrl)}) break;
+      await sleep(50);
+    }
+    return {
+      initialText,
+      initialActive,
+      hasDateGroup,
+      clicked: !!row,
+      state,
+      workspaceHidden: document.getElementById("agentWorkspace").hidden,
+    };
+  })()`);
+}
+
 /**
  * 站点页里的视频：清单经媒体代理改写后，广告段不该被拉过（issue #75）。
  */
@@ -672,6 +743,7 @@ async function main() {
     .filter((r) => r.invoke)
     .map((r) => ({ name: r.name, channel: r.channel }));
   await setBrowserModeAndWait(win, "settings");
+  const seededHistoryProbe = await probeGlobalHistory(win, null);
   const probe = await win.webContents.executeJavaScript(
     pageProbe(invokeRoutes),
   );
@@ -694,6 +766,7 @@ async function main() {
       `typeof window.electronAPI === "undefined"`,
     ),
   } : null;
+  const historyProbe = await probeGlobalHistory(win, site.url);
   win.setSize(1000, 720);
   await sleep(250);
   const resizedLayout = siteView ? {
@@ -1264,6 +1337,21 @@ async function main() {
       initialLayout.bounds.height === initialLayout.content.height - 88,
     "site view is not laid out below the real toolbar without a preload: " +
       JSON.stringify(initialLayout),
+  );
+  expect(
+    seededHistoryProbe.initialActive && seededHistoryProbe.hasDateGroup &&
+      seededHistoryProbe.initialText.includes(SEED_TITLE) &&
+      seededHistoryProbe.initialText.includes(SEED_UNATTR_TITLE) &&
+      seededHistoryProbe.searchText.includes(SEED_UNATTR_TITLE) &&
+      !seededHistoryProbe.searchText.includes(SEED_TITLE) &&
+      seededHistoryProbe.emptyText.includes("没有找到匹配的访问"),
+    "toolbar history did not list and search seeded global visits: " + JSON.stringify(seededHistoryProbe),
+  );
+  expect(
+    historyProbe.initialActive && historyProbe.initialText.includes(SITE_TITLE) &&
+      historyProbe.clicked && historyProbe.state && historyProbe.state.mode === "browser" &&
+      activeBrowserTab(historyProbe.state).url === site.url && historyProbe.workspaceHidden,
+    "history search did not open the local fixture visit: " + JSON.stringify(historyProbe),
   );
   expect(
     resizedLayout && resizedLayout.bounds.y === 88 &&
