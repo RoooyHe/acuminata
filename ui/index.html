@@ -158,7 +158,8 @@
             #browserAddress:focus {
                 border-color: var(--muted-fg);
             }
-            #browserSettings {
+            #browserSettings,
+            #browserHistory {
                 width: auto;
                 padding: 0 10px;
             }
@@ -650,6 +651,7 @@
                 <button type="button" id="browserBack" class="btn browser-button" aria-label="后退" title="后退">←</button>
                 <button type="button" id="browserForward" class="btn browser-button" aria-label="前进" title="前进">→</button>
                 <button type="button" id="browserReload" class="btn browser-button" aria-label="重新载入" title="重新载入">↻</button>
+                <button type="button" id="browserHistory" class="btn browser-button" aria-label="访问历史" aria-controls="history" title="访问历史 (Ctrl+H)">历史</button>
                 <form id="browserAddressForm">
                     <input
                         type="text"
@@ -679,6 +681,19 @@
                         <rect x="2" y="4" width="20" height="16" rx="2" />
                         <path d="M7 4v16M17 4v16" /></svg
                     >作品
+                </div>
+                <div class="nav-item" data-target="history">
+                    <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                    >
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="M12 7v5l3 2" /></svg
+                    >访问历史
                 </div>
                 <div class="nav-item" data-target="candidates">
                     <svg
@@ -885,6 +900,24 @@
                         style="padding: 20px; text-align: center"
                     ></div>
                 </div>
+            </div>
+
+            <div id="history" class="tab-panel">
+                <h2>访问历史</h2>
+                <div class="toolbar">
+                    <input
+                        type="text"
+                        class="search-input"
+                        id="historySearchInput"
+                        placeholder="搜索访问的标题、URL 或站点..."
+                        autocomplete="off"
+                    />
+                </div>
+                <div class="data-list" id="historyContainer"></div>
+                <div
+                    id="historyLoadMoreContainer"
+                    style="padding: 20px; text-align: center"
+                ></div>
             </div>
 
             <div id="candidates" class="tab-panel">

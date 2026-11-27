@@ -145,7 +145,7 @@ class RecordStore {
   // ── Visits ─────────────────────────────────────────────────────────────────
 
   getRecordById(id) { return this._visits.getRecordById(id); }
-  getRecordsPage(page, pageSize, filter) { return this._visits.getRecordsPage(page, pageSize, filter); }
+  getRecordsPage(page, pageSize, filter, search) { return this._visits.getRecordsPage(page, pageSize, filter, search); }
   getAllRecords() { return this._visits.getAllRecords(); }
   getStats() { return this._visits.getStats(); }
   searchRecords(query, limit, minScore, domain) { return this._visits.searchRecords(query, limit, minScore, domain); }

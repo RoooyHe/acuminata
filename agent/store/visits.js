@@ -78,31 +78,33 @@ class VisitStore {
     return this.db.get("SELECT * FROM records WHERE id = ?", [id]);
   }
 
-  getRecordsPage(page, pageSize, filter) {
+  getRecordsPage(page, pageSize, filter, search = "") {
     const offset = (page - 1) * pageSize;
-    let countSql = "SELECT COUNT(*) as total FROM records";
-    let dataSql = "SELECT * FROM records ORDER BY timestamp DESC LIMIT ? OFFSET ?";
-    let params = [pageSize, offset];
-    let countParams = [];
+    const conditions = [];
+    const filterParams = [];
 
     if (filter === "pinned") {
-      countSql = "SELECT COUNT(*) as total FROM records WHERE pinned = 1";
-      dataSql = "SELECT * FROM records WHERE pinned = 1 ORDER BY timestamp DESC LIMIT ? OFFSET ?";
-      countParams = [];
-      params = [pageSize, offset];
+      conditions.push("pinned = 1");
     } else if (filter && filter !== "all") {
       const rules = this.sites.rulesFor(filter);
       if (rules) {
-        const placeholders = rules.map(() => "?").join(",");
-        countSql = `SELECT COUNT(*) as total FROM records WHERE matchedRule IN (${placeholders})`;
-        dataSql = `SELECT * FROM records WHERE matchedRule IN (${placeholders}) ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
-        countParams = rules;
-        params = [...rules, pageSize, offset];
+        conditions.push(`matchedRule IN (${rules.map(() => "?").join(",")})`);
+        filterParams.push(...rules);
       }
     }
 
-    const total = this.db.get(countSql, countParams).total;
-    const records = this.db.all(dataSql, params);
+    const query = (search || "").trim();
+    if (query) {
+      conditions.push("(title LIKE ? OR url LIKE ? OR matchedRule LIKE ?)");
+      filterParams.push(...Array(3).fill(`%${query}%`));
+    }
+
+    const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
+    const total = this.db.get(`SELECT COUNT(*) as total FROM records${where}`, filterParams).total;
+    const records = this.db.all(
+      `SELECT * FROM records${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+      [...filterParams, pageSize, offset],
+    );
     return { records, total, page, pageSize };
   }
 
