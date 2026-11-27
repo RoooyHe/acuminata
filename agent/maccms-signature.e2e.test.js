@@ -2,16 +2,16 @@
  * End-to-end: 装上就能用 —— 没有用户正则的 MacCMS 站点也拿得到编号身份键（issue #26）。
  * Run with: node agent/maccms-signature.e2e.test.js
  *
- * 今天扩展回传的只有五个固定字段（url / title / favIconUrl / description / ogImage），
+ * 只有五个固定字段（url / title / favIconUrl / description / ogImage）时，
  * 而真实 MacCMS 页**没有** og:image（模板文档实测），封面只存在于
  * `<img data-original="/upload/vod/…">` 里——所以编号根本到不了桌面端。
  *
  * 这个测试跑的是补上的那一半：
  *
- *   扩展在页面上认签名 → collect 抽字段 → 回传（pageSignature / pageFields）
+ *   站点页认签名 → collect 抽字段 → 回传（pageSignature / pageFields）
  *     → 桌面端按签名认适配器 → parse → 身份键 → 作品归属
  *
- * 页面那一步用的是 `shared/page-collect.js` 的 `collectPage`——与扩展注入页面的
+ * 页面那一步用的是 `shared/page-collect.js` 的 `collectPage`，与站点页注入页面的
  * 是同一个函数，这里只是把页面换成真实抓下来的夹具（linkedom）。
  * 跨站配对沿用既有夹具（agent/annotated-pair.fixture.js）：A = aiqiyi.ai（MacCMS），
  * B = tvmao.com（元数据站），用户标注为同一部《无可替代》。
@@ -77,8 +77,8 @@ async function runTests() {
     "五个固定字段里拿不到高可信度键（真页没有 og:image）——这就是本轮要补的那一半",
   );
 
-  // ── ② 扩展看到的东西：页面签名 + 适配器在真页上抽到的字段 ──
-  console.log("\n② 扩展在真页上采集");
+  // ── ② 站点页看到的东西：页面签名 + 适配器在真页上抽到的字段 ──
+  console.log("\n② 页面采集");
   const store = await openStore();
   const seen = collectPage(store.getAdapters(), parseHTML(AIQIYI_HTML).document);
   assert(seen.pageSignature.includes("maccms"), "回传的页面签名里有 maccms（平台身份）");
@@ -88,7 +88,7 @@ async function runTests() {
     typeof cover === "string" && cover.includes(AIQIYI_CODE),
     "适配器的 collect 在真页上抽到封面（编号就在这个 URL 里）",
   );
-  // 走一遍扩展 → WebSocket → 桌面端的序列化：非 JSON 的形状（Set、Map、DOM 节点）会在这里露馅
+  // 走一遍进程边界的 JSON 序列化：非 JSON 的形状（Set、Map、DOM 节点）会在这里露馅
   const reported = JSON.parse(JSON.stringify(seen));
 
   // ── ③ 桌面端：按签名认适配器 → parse → 编号身份键 ──

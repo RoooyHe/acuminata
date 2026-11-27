@@ -106,13 +106,6 @@ async function runTests() {
   assert(typeof stats.total === "number", "Stats has total");
   assert(typeof stats.today === "number", "Stats has today");
   assert(typeof stats.domainCounts === "object", "Stats has domainCounts");
-  const ruleStats = store.getRuleStats();
-  assert(typeof ruleStats.total === "number", "Rule stats have total");
-  assert(
-    typeof ruleStats.stats === "object" &&
-      Object.values(ruleStats.stats).every((c) => typeof c === "number"),
-    "Rule stats map matchedRule to counts",
-  );
 
   // Test 9: Agent Profile
   console.log("\nTest: Agent Profile");

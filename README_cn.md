@@ -1,6 +1,6 @@
 # Acuminata
 
-**Acuminata** 是一款隐私优先、由 AI Agent 驱动的浏览器历史追踪与分析引擎。它通过 Electron 桌面端与 Chrome 插件的深度联动，将传统的“浏览记录”转化为可供智能体推演、学习并自动管理的“数字记忆资产”。
+**Acuminata** 是一款隐私优先的桌面应用，用于追踪和分析已登记站点的访问。它在 Electron 内承载站点页，把访问存入本地数据库，并提供 AI Agent 工具来搜索和管理这些历史。
 
 ## 核心特性
 
@@ -27,11 +27,11 @@
 
 ## 技术架构
 
-系统采用 C/S 架构，Electron 应用作为唯一的真实数据源（Source of Truth）。
+Electron 应用是唯一的数据源，也是唯一的捕获宿主。
 
-* **Electron App**：运行 WebSocket 服务器（`127.0.0.1:8766`，只绑回环），内置 SQLite (sql.js) 数据库。
-* **Chrome Extension**：基于 Plasmo 框架开发，支持 `WS 实时同步` 和 `本地离线缓存` 双模式。
-* **AI Engine**：支持集成 OpenAI、Anthropic (Claude) 以及本地部署的 Ollama。
+* **站点页**：在应用内打开已登记站点。页面导航会触发采集，并把访问写入本地 SQLite (sql.js) 数据库。
+* **桌面界面**：提供记录列表、访问搜索、站点筛选、置顶和 JSON 导出。
+* **AI Engine**：支持 OpenAI、Anthropic (Claude) 以及本地部署的 Ollama。
 
 ---
 
@@ -50,26 +50,6 @@ npm run dev
 # npm run build
 
 ```
-
-### 浏览器插件 (Extension)
-
-```bash
-cd extend/
-
-# 安装依赖
-npm install
-
-# 开发模式 (支持 HMR)
-npm run dev
-
-# 构建正式版
-npm run build
-
-```
-
-构建成功后，在 Chrome 扩展管理页面选择“加载已解压的扩展程序”，路径为 `extend/build/chrome-mv3-prod/`。
-
----
 
 ## 数据模型 (SQLite)
 

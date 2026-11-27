@@ -3,7 +3,7 @@
 // （main.js 用的同一个封装），不另写一份信封。
 //
 // 背景：载荷曾经是裸值（watchlist 数组、enabled 布尔），铺开后只剩事件名，
-// 扩展读到 undefined → watchlist 被清空、enabled 读反；一次访问又额外推了
+// 渲染层读到 undefined → watchlist 被清空、enabled 读反；一次访问又额外推了
 // 一条健康度广播，变成两条。
 
 const assert = require("assert");
@@ -32,7 +32,7 @@ function check(cond, msg) {
   });
   await store.init();
 
-  // watchlist：扩展读 msg.watchlist（增 / 删 / 批量同步都要带）
+  // watchlist：渲染层读 msg.watchlist（增 / 删 / 批量同步都要带）
   console.log("Test: watchlist 广播带 watchlist 数组");
   messages.length = 0;
   store.addWatchlist({ domain: "b.example", label: "B", color: "#fff" });
@@ -63,7 +63,7 @@ function check(cond, msg) {
     "批量同步：watchlistUpdated 带 watchlist 数组",
   );
 
-  // enabled：扩展读 msg.enabled
+  // enabled：渲染层读 msg.enabled
   console.log("\nTest: enabled 广播带 enabled 布尔");
   messages.length = 0;
   store.setEnabled(false);
@@ -75,7 +75,7 @@ function check(cond, msg) {
   msg = messages.filter((m) => m.type === "enabledUpdated").pop();
   check(msg && msg.enabled === true, "开启追踪：enabledUpdated 带 enabled=true");
 
-  // record：扩展读 msg.record；一条访问只发一条广播，且带健康度
+  // record：渲染层读 msg.record；一条访问只发一条广播，且带健康度
   console.log("\nTest: record 广播带 record 对象，一条访问一条广播");
   store.addWatchlist({
     domain: "r.example",

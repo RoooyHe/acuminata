@@ -122,7 +122,7 @@ async function runTests() {
   eq(registered[0].groupLabel, "芒果", "候选的来源站点带上分组标签");
   eq(listFetchTargets(adapters, [{ domain: "bilibili.com" }]).length, 0, "没登记的站点一个都不抓");
 
-  // 登记父域名即可：扩展按后缀匹配主机名，桌面抓取也按后缀。
+  // 登记父域名即可：站点匹配与桌面抓取都按后缀。
   const hsckTargets = listFetchTargets(adapters, [{ domain: "9977hsck.cc", label: "黄色仓库" }]);
   eq(hsckTargets.length, 1, "登记父域名就抓得到子域名上的列表页");
   eq(hsckTargets[0].url, "https://111.9977hsck.cc/vodtype/2.html", "抓的是声明的那个列表页");

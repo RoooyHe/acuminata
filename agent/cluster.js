@@ -123,7 +123,7 @@ function getGroupDomains(groupLabel, watchlist, fallbackDomain) {
  */
 function resolveGroup(matchedRule, domain, watchlist, adapters) {
   const entry = watchlist.find((w) => w.domain === matchedRule);
-  // 镜像按**登记域名**查：扩展会把 `m.example.com` 报成 domain、`example.com` 报成 matchedRule，
+  // 镜像按**登记域名**查：站点页把 `m.example.com` 报成 domain、`example.com` 报成 matchedRule，
   // 拿实际主机名去查会漏拊镜像组与闸门。
   const domains = mirrorGroupFor(entry ? entry.domain : domain, adapters);
   return {
@@ -150,7 +150,7 @@ function extractPath(url) {
 
 /**
  * 同一个标签页在 60s 内重报同一页：还是那一次访问，不产生第二条。
- * 扩展在它自己那一层先挡了一道（tab-tracker），这里是权威的那一道。
+ * 这里是同一次访问的权威判定。
  *
  * @param {Object|null} existing - 同组同路径的那条访问
  * @param {{tabId:number}} incoming
@@ -192,7 +192,7 @@ function computeDailyScore(existing, now) {
 /**
  * 一条访问的作品身份键，两路信号合流：
  *
- *   适配器 —— 扩展回传的**页面签名**认出平台，回传的 collect 字段跑 parse
+ *   适配器 —— 站点页回传的**页面签名**认出平台，采集的 collect 字段跑 parse
  *   旧规则 —— 站点登记上那个 `regexFilter` 的命名捕获组（既当闸门又当解析器）
  *
  * 适配器那一路是本轮（#26）之前没有的：没有用户正则的 MacCMS 站点也能拿到编号。
@@ -203,7 +203,7 @@ function computeDailyScore(existing, now) {
  * 共用这一条路径。这里**不含闸门**——闸门只决定「这一页要不要收」，
  * 回填面对的是已经收下的历史，不能因为适配器今天不匹配就把旧访问判死。
  *
- * @param {Object} incoming 扩展上报的访问（可带 `pageSignature` / `pageFields`）
+ * @param {Object} incoming 站点页采集的访问（可带 `pageSignature` / `pageFields`）
  * @param {Array<Object>} watchlist
  * @param {Array<Object>} [groupRules] 分组规则；不传则自己取（回填用）
  * @param {Array<Object>} [adapters] 适配器；没有就是今天的行为（只有旧规则那一路）

@@ -169,23 +169,6 @@ class VisitStore {
     );
   }
 
-  /**
-   * 按 matchedRule 分组的访问计数：`{ total, stats: { [matchedRule]: count } }`。
-   * getStats 按 watchlist 标签聚合、还带今日/站点数等概览；扩展的 getStats
-   * 查询要的是原始站点粒度，所以单独一个名字。
-   */
-  getRuleStats() {
-    const stats = {};
-    const rows = this.db.all(
-      "SELECT matchedRule, COUNT(*) as count FROM records GROUP BY matchedRule",
-    );
-    for (const r of rows) stats[r.matchedRule] = r.count;
-    return {
-      total: this.db.scalar("SELECT COUNT(*) as count FROM records"),
-      stats,
-    };
-  }
-
   searchRecords(query, limit = 50, minScore = 0, domain = "") {
     const q = `%${query}%`;
     let sql, params;
@@ -323,7 +306,7 @@ class VisitStore {
       ],
     );
     const full = this.getRecordById(record.id);
-    // 广播形状要与扩展/渲染进程约定的一致：记录在 record 字段下。
+    // 广播形状与渲染进程的约定一致：记录在 record 字段下。
     // recordVisit 会压掉这次广播，改发一条带作品与统计的（见方法末尾）。
     if (opts.emit !== false) this.emit("recordAdded", { record: full });
     return full;
@@ -421,7 +404,7 @@ class VisitStore {
    * 调用方只给一条来访消息，不再提供查重回调——查重和落库都要读库，
    * 把链路交给调用方拼，得到的就是一条谁也没测过的调用顺序。
    *
-   * @param {Object} incoming 扩展上报的访问：
+   * @param {Object} incoming 站点页采集的访问：
    *        {url, title, domain, matchedRule, tabId, timestamp, id?,
    *         favIconUrl?, description?, ogImage?, pageSignature?, pageFields?}
    * @returns {{ action:"drop"|"ignore"|"insert"|"update", reason?:string,
@@ -433,7 +416,7 @@ class VisitStore {
    *          ambiguous 为 true 表示身份键指向多部作品，按 ADR-0002 不静默合并。
    */
   recordVisit(incoming) {
-    // 访问发生的时刻由上报方给出（扩展的浏览器时钟）；缺省才用本机时钟。
+    // 访问发生的时刻由采集方给出；缺省才用本机时钟。
     // 这一条对两层计分都成立：访问层与作品层按同一个日期分桶。
     const ts = incoming.timestamp || now();
     const watchlist = this.sites.getWatchlist();

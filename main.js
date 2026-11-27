@@ -1,7 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const WebSocket = require("ws");
 const { RecordStore } = require("./agent/record-store");
 const { createSitePage } = require("./site-page");
 const { toClientMessage } = require("./agent/broadcast");
@@ -27,7 +26,6 @@ const { saveMediaCopy } = require("./local-copy");
 // 必须在 app ready 之前登记，否则 Chromium 不认这个 scheme。
 registerMediaScheme();
 
-const EXTENSION_PORT = 8766;
 // Explicit override only (used by the smoke test); otherwise the user's real DB.
 const DB_PATH = process.env.ACUMINATA_DB_PATH
   ? process.env.ACUMINATA_DB_PATH
@@ -39,9 +37,7 @@ const LOCAL_COPY_ROOT = process.env.ACUMINATA_LOCAL_COPY_DIR ||
   path.join(app.getPath("userData"), "local-copies");
 
 let mainWindow;
-let extensionServer;
 let sitePage;
-let extensionClients = new Set();
 let store;
 let localCopyQueue = Promise.resolve();
 let aiConfig = {
@@ -116,7 +112,7 @@ async function init() {
     fs.mkdirSync(USER_ADAPTER_DIR, { recursive: true });
   } catch (e) { /* 建不出来就当没有用户适配器 */ }
   store = new RecordStore(DB_PATH, (type, data) => {
-    broadcastToExtensions(toClientMessage(type, data));
+    broadcastToRenderer(toClientMessage(type, data));
   }, { adapterDirs: [ADAPTER_DIR, USER_ADAPTER_DIR] });
 
   await store.init();
@@ -147,7 +143,6 @@ async function init() {
     try {
       store.save();
     } catch (e) { /* ignore */ }
-    if (extensionServer) extensionServer.close();
   });
 
   // Agent tooling
@@ -167,7 +162,7 @@ async function init() {
     onVisit: recordIncomingVisit,
     onAdapterWarning: (file, message) => {
       store.reportAdapterWarning(file, message);
-      broadcastToExtensions(
+      broadcastToRenderer(
         toClientMessage("adapterHealthUpdated", { health: store.getHealthSnapshot() }),
       );
     },
@@ -187,58 +182,17 @@ async function init() {
     // ponytail: executor 交来整条事件对象，这里按封装前的线上形状（整条对象当 type）
     // 转发，保持无行为变化。代价是 agent_status 在渲染端一直不可见
     // （ui/renderer.js 按 data.type === "agent_status" 判断）；修这个形状是行为变更，另开。
-    broadcastAgentEvent: (event) => broadcastToExtensions({ type: event }),
+    broadcastAgentEvent: (event) => broadcastToRenderer({ type: event }),
   });
-
-  // Extension server
-  startExtensionServer();
 
   // Window
   createWindow();
 }
 
-// ── WebSocket ────────────────────────────────────────────────────────────────
-
-function broadcastToExtensions(data) {
-  const msg = JSON.stringify(data);
-  extensionClients.forEach((ws) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-  });
+function broadcastToRenderer(data) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("data-update", data);
   }
-}
-
-function startExtensionServer() {
-  // 只绑回环：这台机器之外的任何主机都不该能读到或抹掉浏览历史。
-  extensionServer = new WebSocket.Server({ port: EXTENSION_PORT, host: "127.0.0.1" });
-  console.log(`[Server] Extension WebSocket server running on 127.0.0.1:${EXTENSION_PORT}`);
-
-  extensionServer.on("connection", (ws) => {
-    console.log("[Server] Extension connected");
-    extensionClients.add(ws);
-
-    ws.send(JSON.stringify({ type: "init", watchlist: store.getWatchlist(), enabled: store.getEnabled(), adapters: store.getAdapters() }));
-
-    ws.on("message", (data) => {
-      try {
-        const msg = JSON.parse(data);
-        handleExtensionMessage(ws, msg);
-      } catch (e) {
-        console.error("[Server] Invalid message:", e);
-      }
-    });
-
-    ws.on("close", () => {
-      extensionClients.delete(ws);
-      console.log("[Server] Extension disconnected");
-    });
-
-    ws.on("error", (err) => {
-      console.error("[Server] WebSocket error:", err);
-      extensionClients.delete(ws);
-    });
-  });
 }
 
 // ── 适配器健康度 ──────────────────────────────────────────────────────────────
@@ -247,7 +201,7 @@ function startExtensionServer() {
 // 计数器由 RecordStore 持有：命中的访问随那唯一一条 record 广播带上快照，
 // 丢弃/去重没有 record 广播，下面的分支单独推一份（一条访问一条广播）。
 
-// 一条访问的来料 → 落库 + 广播。扩展的上报与站点页的采集（ADR-0011）都走这里。
+// 站点页的来料 → 落库 + 广播（ADR-0011）。
 //
 // 一条访问走一条通道：列表页 → 闸门 → 身份键 → 同组同路径去重 → 当日计分 →
 // 作品归属 → 落库，全部在 store 内一次判完（docs/adr/0002）。
@@ -258,7 +212,7 @@ function recordIncomingVisit(incoming) {
   if (result.action === "drop" || result.action === "ignore") {
     // 丢弃/去重都不产生 record 广播，健康度得自己推一次，
     // 否则「连续丢弃且从未命中」的站点要等下一次无关更新才看得见。
-    broadcastToExtensions(
+    broadcastToRenderer(
       toClientMessage("adapterHealthUpdated", { health: store.getHealthSnapshot() }),
     );
     return result;
@@ -313,52 +267,6 @@ function saveWorkLocalCopy(workId) {
   return job;
 }
 
-function handleExtensionMessage(ws, msg) {
-  switch (msg.type) {
-    case "addRecord": {
-      recordIncomingVisit(msg);
-      break;
-    }
-    case "getStats": {
-      const { total, stats } = store.getRuleStats();
-      ws.send(JSON.stringify({ type: "stats", total, stats, enabled: store.getEnabled() }));
-      break;
-    }
-    case "updateWatchlist": {
-      store.updateWatchlist(msg.watchlist);
-      break;
-    }
-    case "updateEnabled": {
-      store.setEnabled(msg.enabled);
-      break;
-    }
-    case "clearRecords": {
-      store.clearRecords();
-      break;
-    }
-    case "recordUpdated": {
-      if (msg.record) {
-        store.updateRecord(msg.record.id, {
-          pinned: msg.record.pinned ? 1 : 0,
-          score: msg.record.score,
-          description: msg.record.description || "",
-          ogImage: msg.record.ogImage || "",
-          dwellTime: msg.record.dwellTime || 0,
-        });
-      }
-      break;
-    }
-    case "exportData": {
-      ws.send(JSON.stringify({
-        type: "exportData",
-        watchlist: store.getWatchlist(),
-        records: store.getAllRecords(),
-      }));
-      break;
-    }
-  }
-}
-
 // ── Reflection ───────────────────────────────────────────────────────────────
 
 async function triggerReflectionOnDelete(deletedRecords) {
@@ -373,7 +281,7 @@ async function triggerReflectionOnDelete(deletedRecords) {
 
 // ── 候选抓取 ────────────────────────────────────────────────────────────────
 // ADR-0005：适配器声明列表页，App 用**隐藏 BrowserWindow** 载入并执行站点的 JS，
-// 然后在渲染后的 DOM 上跑与扩展**同一套** collect 选择器（同一个自足函数）。
+// 然后在渲染后的 DOM 上跑同一套 collect 选择器（同一个自足函数）。
 // 只在用户点击时触发，不登记不抓，也不翻分页。
 
 /** 在隐藏窗口里把一个列表页渲染出来，抽出条目；失败抛出（不静默）。 */
@@ -470,7 +378,7 @@ function createWindow() {
   // 启动时损坏的库要报给用户（不能只写控制台——打包后用户看不到），窗口加载完再发。
   mainWindow.webContents.once("did-finish-load", () => {
     if (store.recovered) {
-      broadcastToExtensions(
+      broadcastToRenderer(
         toClientMessage("databaseRecovered", { backupPath: store.recovered.backupPath }),
       );
     }

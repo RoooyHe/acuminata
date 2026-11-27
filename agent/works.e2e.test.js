@@ -127,7 +127,7 @@ async function runTests() {
   );
   assert(
     orphan.action === "insert",
-    "没有适配器规则的域名不会被闸门丢弃（域名过滤在扩展那一层）",
+    "没有适配器规则的域名不会被闸门丢弃（没有用户正则时不拦截）",
   );
   assert(orphan.work === null, "也归不到作品——这是降级路径");
   assert(

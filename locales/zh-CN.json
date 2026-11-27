@@ -1,6 +1,4 @@
 {
-  "header.ws.connected": "已连接",
-  "header.ws.disconnected": "未连接",
   "header.tracking": "追踪中",
   "header.paused": "已暂停",
 

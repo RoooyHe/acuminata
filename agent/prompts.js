@@ -1,7 +1,7 @@
 // Agent prompt builders — pure functions, no side effects.
 // 所有模型提示词的构建处（见 docs/adr/0009）：兴趣归纳、自动清理、
 // 删除反思、拒绝推荐都在这里。核对「提示词带了哪些字段」只看这个文件；
-// 工具结果另见 agent/tools.js。扩展不再自行拼接提示词或直连模型。
+// 工具结果另见 agent/tools.js。提示词只由桌面端构建。
 
 /**
  * Build the tool-driven interest-analysis messages for the agent loop.
