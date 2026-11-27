@@ -35,6 +35,12 @@ async function runTests() {
   assert(store.db !== null, "Database is initialized");
   assert(store.getWatchlist().length === 1, "Default watchlist has 1 entry");
   assert(store.getWatchlist()[0].domain === "bilibili.com", "Default domain is bilibili.com");
+  store.reportAdapterWarning("maccms.json", "播放规则选择器无效");
+  const warnedAdapter = store.getHealthSnapshot().adapters.find((a) => a.key === "maccms.json");
+  assert(
+    warnedAdapter && warnedAdapter.warning === "播放规则选择器无效",
+    "RecordStore exposes adapter playback warnings through its health facade",
+  );
 
   // Test 2: Watchlist CRUD
   console.log("\nTest: Watchlist CRUD");

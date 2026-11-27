@@ -42,6 +42,13 @@ const builtin = loadAdapters();
 ok(builtin.length === 1, "adapters/ 下读到一个内置适配器");
 ok(builtin[0].file === "maccms.json", "带来源文件名 file");
 ok(builtin[0].name === "MacCMS", "读到的是真适配器的内容");
+ok(
+  builtin[0].playback &&
+    builtin[0].playback.mount.includes("#MacPlayer") &&
+    builtin[0].playback.hide.includes(".dplayer") &&
+    builtin[0].playback.hide.includes(".artplayer"),
+  "MacCMS 适配器随文件加载平台级播放接管规则",
+);
 ok(loadAdapters(ADAPTER_DIR).length === 1, "显式传单目录与缺省一致");
 ok(loadAdapters(path.join(tmp, "does-not-exist")).length === 0, "目录不存在返回空，不抛错");
 
